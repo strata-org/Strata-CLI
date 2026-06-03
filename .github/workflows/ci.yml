@@ -48,7 +48,7 @@ jobs:
           use-github-cache: false
           test: false
       - name: Run `strata` CLI
-        run: lake exe strata
+        run: lake exe strata --help
       - name: Validate examples against expected output
         shell: bash
         run: ./scripts/run_examples.sh
