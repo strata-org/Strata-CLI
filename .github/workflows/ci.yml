@@ -47,10 +47,10 @@ jobs:
         with:
           use-github-cache: false
           test: false
-      #- name: Validate examples against expected output
-      #  working-directory: Examples
-      #  shell: bash
-      #  run: ./run_examples.sh
+      - name: Validate examples against expected output
+        working-directory: .lake/packages/Strata/Examples
+        shell: bash
+        run: ../../../../scripts/run_examples.sh
       - name: Save lake cache
         ## Only use the caches on PRs because there is a risk of stale results:
         ## https://github.com/strata-org/Strata/issues/952
@@ -91,6 +91,8 @@ jobs:
       actions: write
     steps:
       - uses: actions/checkout@v6
+      - name: Restore lake cache
+        uses: strata-org/Strata/.github/actions/restore-lake-cache@main
       - name: Build API documentation package
         uses: leanprover/lean-action@v1
         with:
@@ -98,5 +100,3 @@ jobs:
           auto-config: false
           build: true
           build-args: "StrataCLI:docs"
-      - name: Restore lake cache
-        uses: strata-org/Strata/.github/actions/restore-lake-cache@main
