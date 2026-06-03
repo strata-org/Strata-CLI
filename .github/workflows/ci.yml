@@ -32,16 +32,16 @@ jobs:
       #  uses: ./.github/actions/install-cvc5
       #- name: Install z3
       #  uses: ./.github/actions/install-z3
-      - name: Restore lake cache
-        # Only use the caches on PRs because there is a risk of stale results:
-        # https://github.com/strata-org/Strata/issues/952
-        if: github.event_name == 'pull_request'
-        uses: ./.github/actions/restore-lake-cache
-        with:
-          path: |
-            .lake
-            StrataCLI/.lake
-            StrataPython/.lake
+      #- name: Restore lake cache
+        ## Only use the caches on PRs because there is a risk of stale results:
+        ## https://github.com/strata-org/Strata/issues/952
+        #if: github.event_name == 'pull_request'
+        #uses: ./.github/actions/restore-lake-cache
+        #with:
+          #path: |
+            #.lake
+            #StrataCLI/.lake
+            #StrataPython/.lake
       - name: Build and test
         uses: leanprover/lean-action@v1
         with:
@@ -90,12 +90,12 @@ jobs:
         uses: leanprover/lean-action@v1
         with:
           lake-package-directory: 'docs/api'
-      - name: Restore lake cache
-        uses: actions/cache/restore@v5
-        with:
-          path: |
-            .lake
-            docs/verso/.lake
-          key: docs-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'docs/verso/lean-toolchain') }}-${{ hashFiles('lake-manifest.json', 'docs/verso/lake-manifest.json') }}-${{ hashFiles('**/*.st') }}-${{ github.sha }}
-          restore-keys: |
-            docs-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'docs/verso/lean-toolchain') }}-${{ hashFiles('lake-manifest.json', 'docs/verso/lake-manifest.json') }}-${{ hashFiles('**/*.st') }}
+      #- name: Restore lake cache
+      #  uses: actions/cache/restore@v5
+      #  with:
+      #    path: |
+      #      .lake
+      #      docs/verso/.lake
+      #    key: docs-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'docs/verso/lean-toolchain') }}-${{ hashFiles('lake-manifest.json', 'docs/verso/lake-manifest.json') }}-${{ hashFiles('**/*.st') }}-${{ github.sha }}
+      #    restore-keys: |
+      #      docs-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'docs/verso/lean-toolchain') }}-${{ hashFiles('lake-manifest.json', 'docs/verso/lake-manifest.json') }}-${{ hashFiles('**/*.st') }}
