@@ -90,6 +90,9 @@ jobs:
         uses: leanprover/lean-action@v1
         with:
           lake-package-directory: 'docs/api'
+          auto-config: false
+          build: true
+          build-args: "StrataCLI:docs"
       #- name: Restore lake cache
       #  uses: actions/cache/restore@v5
       #  with:
