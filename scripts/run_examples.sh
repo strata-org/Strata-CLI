@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Test runner for Examples/.  Two kinds of tests:
+# Test runner for a directory of Strata files.  Two kinds of tests:
 #
 # 1. Verify tests: for each <name>.st with a matching expected/<name>.expected,
 #    run `strata verify` and diff the output.
@@ -17,7 +17,10 @@
 #      and verifiable
 
 failed=0
+TOP_DIR=$(pwd)
+EXAMPLES_DIR=${TOP_DIR}/.lake/packages/Strata/Examples
 
+cd ${EXAMPLES_DIR}
 # ── Verify tests ────────────────────────────────────────────────────
 for test_file in *.st; do
     if [ -f "$test_file" ]; then
@@ -25,7 +28,7 @@ for test_file in *.st; do
         expected_file="expected/${base_name}.expected"
         if [ -f "$expected_file" ]; then
 
-            output=$(cd .. && ./StrataCLI/.lake/build/bin/strata verify --vc-directory vcs "Examples/${test_file}")
+            output=$(${TOP_DIR}/.lake/build/bin/strata verify --vc-directory vcs "${test_file}")
 
             if ! echo "$output" | diff -q "$expected_file" - > /dev/null; then
                 echo "ERROR: Analysis output for $base_name does not match expected result"
@@ -34,13 +37,13 @@ for test_file in *.st; do
 	        else
 		        echo "Test passed: $test_file"
             fi
-            if ls ../vcs/*.smt2 2> /dev/null > /dev/null ; then
-                if ! grep -q "set-info" ../vcs/*.smt2 ; then
+            if ls vcs/*.smt2 2> /dev/null > /dev/null ; then
+                if ! grep -q "set-info" vcs/*.smt2 ; then
                   echo "ERROR: No provenance information in VCs"
                   failed=1
                 fi
             fi
-            rm -rf ../vcs
+            rm -rf vcs
         fi
     fi
 done
@@ -99,7 +102,7 @@ for transform_file in expected/*.*.core.st; do
     # 1. Check transform output matches the .core.st file
     tmp_transform=$(mktemp)
     tmp_stderr=$(mktemp)
-    if ! (cd .. && ./StrataCLI/.lake/build/bin/strata transform "Examples/${source_file}" $transform_flags) > "$tmp_transform" 2>"$tmp_stderr"; then
+    if ! (${TOP_DIR}/.lake/build/bin/strata transform "${source_file}" $transform_flags) > "$tmp_transform" 2>"$tmp_stderr"; then
         echo "ERROR: Transform command failed for $transform_base"
         cat "$tmp_stderr"
         rm -f "$tmp_transform" "$tmp_stderr"
@@ -118,7 +121,7 @@ for transform_file in expected/*.*.core.st; do
     # 2. Verify the transformed file and check against .core.expected
     verify_expected="expected/${transform_base}.core.expected"
     if [ -f "$verify_expected" ]; then
-        verify_output=$(cd .. && ./StrataCLI/.lake/build/bin/strata verify "Examples/${transform_file}")
+        verify_output=$(${TOP_DIR}/.lake/build/bin/strata verify "${transform_file}")
         if ! echo "$verify_output" | diff -q "$verify_expected" - > /dev/null; then
             echo "ERROR: Verify output for $transform_base does not match expected"
             echo "$verify_output" | diff "$verify_expected" -
