@@ -28,10 +28,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-      - name: Install cvc5
-        uses: ./.github/actions/install-cvc5
-      - name: Install z3
-        uses: ./.github/actions/install-z3
+      #- name: Install cvc5
+      #  uses: ./.github/actions/install-cvc5
+      #- name: Install z3
+      #  uses: ./.github/actions/install-z3
       - name: Restore lake cache
         # Only use the caches on PRs because there is a risk of stale results:
         # https://github.com/strata-org/Strata/issues/952
