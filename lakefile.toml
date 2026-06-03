@@ -4,11 +4,14 @@ defaultTargets = ["StrataMainLib", "strata"]
 
 [[require]]
 name = "Strata"
-path = ".."
+git = "https://github.com/strata-org/Strata"
+rev = "main"
 
 [[require]]
 name = "StrataPython"
-path = "../StrataPython"
+git = "https://github.com/strata-org/Strata"
+subDir = "StrataPython"
+rev = "main"
 
 [[lean_lib]]
 name = "StrataMainLib"
