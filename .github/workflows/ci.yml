@@ -74,7 +74,7 @@ jobs:
       - uses: strata-org/Strata/.github/actions/check-copyright-headers@main
       - uses: strata-org/Strata/.github/actions/lint-whitespace@main
         with:
-          directory: MyLeanLib
+          directory: .
       - uses: strata-org/Strata/.github/actions/check-lean-import@main
       - uses: strata-org/Strata/.github/actions/check-no-panic@main
         with:
