@@ -15,14 +15,15 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v6
-      - name: Build documentation package
+      - name: Restore lake cache
+        uses: strata-org/Strata/.github/actions/restore-lake-cache@main
+      - name: Build API documentation package
         uses: leanprover/lean-action@v1
         with:
-          build-args: '--wfail'
           lake-package-directory: 'docs/api'
-      - name: Build documentation
-        run: lake build StrataAPI:docs
-        working-directory: docs/api
+          auto-config: false
+          build: true
+          build-args: "StrataCLI:docs"
       - name: Create documentation index
         run: |
           cp index.html _out/
