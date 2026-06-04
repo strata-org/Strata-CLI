@@ -27,7 +27,7 @@ jobs:
       - name: Create documentation index
         run: |
           cp index.html _out/
-          cp ../../strata_logo.png _out/
+          cp strata_logo.png _out/
         working-directory: docs/api
       - name: Setup Pages
         uses: actions/configure-pages@v6
