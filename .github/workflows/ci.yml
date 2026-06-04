@@ -58,31 +58,27 @@ jobs:
         if: github.event_name == 'pull_request'
         uses: strata-org/Strata/.github/actions/save-lake-cache@main
 
-  #lint_checks:
-  #  name: Run lint checks
-  #  runs-on: ubuntu-latest
-  #  permissions:
-  #    contents: read
-  #  strategy:
-  #    matrix:
-  #      toolchain:
-  #        - stable
-  #  steps:
-  #    - name: Checkout
-  #      uses: actions/checkout@v6
-  #      with:
-  #        fetch-depth: 0
-  #    - name: Check copyright headers
-  #      run: python3 .github/scripts/check_copyright_headers.py .
-  #      shell: bash
-  #    - name: Check for trailing whitespace
-  #      run: .github/scripts/lintWhitespace.sh
-  #    - name: Check for import Lean
-  #      run: .github/scripts/checkLeanImport.sh
-  #    - name: Check Lean version consistncy
-  #      run: .github/scripts/check_lean_consistency.sh
-  #    - name: Check for new panic! usage
-  #      run: .github/scripts/checkNoPanic.sh "origin/${{ github.base_ref || 'main' }}"
+  lint_checks:
+    name: Run lint checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        toolchain:
+          - stable
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0  # required by check-no-panic (needs git history)
+      - uses: strata-org/Strata/.github/actions/check-copyright-headers@main
+      - uses: strata-org/Strata/.github/actions/lint-whitespace@main
+        with:
+          directory: .
+      - uses: strata-org/Strata/.github/actions/check-lean-import@main
+      - uses: strata-org/Strata/.github/actions/check-no-panic@main
+        with:
+          base-ref: "origin/main"
 
   build_doc:
     name: Build documentation
