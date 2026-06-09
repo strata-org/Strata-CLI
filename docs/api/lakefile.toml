@@ -8,6 +8,11 @@ name = "StrataCLI"
 path = "../../"
 
 [[require]]
+name = "StrataDDM"
+git = "https://github.com/strata-org/Strata-DDM"
+rev = "main"
+
+[[require]]
 scope = "leanprover"
 name = "doc-gen4"
 # If you are developing against a release candidate or a stable version `v4.x`, replace `main` below by `v4.x`.
