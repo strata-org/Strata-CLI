@@ -9,8 +9,12 @@ rev = "main"
 
 [[require]]
 name = "StrataPython"
-git = "https://github.com/strata-org/Strata"
-subDir = "StrataPython"
+git = "https://github.com/strata-org/Strata-Python"
+rev = "main"
+
+[[require]]
+name = "StrataDDM"
+git = "https://github.com/strata-org/Strata-DDM"
 rev = "main"
 
 [[lean_lib]]
