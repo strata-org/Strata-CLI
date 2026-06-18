@@ -1,0 +1,106 @@
+# Copyright Strata Contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# Downstream check: builds Strata-Boogie against this PR's Strata-CLI code, so
+# we catch breakage before it lands on main. Advisory only — visible on the PR
+# but does not gate merge.
+#
+# Strata-Boogie is a .NET project, not a Lake package: it does not `require`
+# Strata-CLI in a lakefile. Instead it builds the `strata` binary from
+# Strata-CLI and runs `dotnet test` against it via STRATA_VERIFIER_PATH. So
+# this check mirrors Strata-Boogie's own CI, but builds `strata` from the PR's
+# checked-out Strata-CLI rather than a fresh clone of CLI's main.
+#
+# Triggers mirror the other downstream-checks: non-draft PRs (ready_for_review
+# + synchronize) and the `!downstream-check` comment from a repo collaborator.
+
+name: Downstream check
+
+on:
+  pull_request:
+    types: [ready_for_review, synchronize]
+  issue_comment:
+    types: [created]
+
+concurrency:
+  group: downstream-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.gate.outputs.run }}
+      head_sha: ${{ steps.gate.outputs.head_sha }}
+    steps:
+      - name: Gate
+        id: gate
+        uses: strata-org/Strata/.github/actions/downstream-gate@main
+
+  downstream:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    name: Strata-Boogie
+    steps:
+      - name: Check out PR's Strata-CLI
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.gate.outputs.head_sha }}
+          path: StrataCLI
+
+      - name: Clone Strata-Boogie
+        run: git clone --depth 1 https://github.com/strata-org/Strata-Boogie.git downstream
+
+      - name: Install cvc5
+        uses: ./StrataCLI/.github/actions/install-cvc5
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore lake cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            StrataCLI/.lake
+          key: downstream-Boogie-${{ runner.os }}-${{ needs.gate.outputs.head_sha }}
+          restore-keys: |
+            downstream-Boogie-${{ runner.os }}-
+
+      # Build the `strata` binary from the PR's Strata-CLI — this is the
+      # artifact Strata-Boogie's integration tests verify against.
+      - name: Build strata binary from PR's Strata-CLI
+        uses: leanprover/lean-action@v1
+        with:
+          build-args: strata
+          test: false
+          lake-package-directory: StrataCLI
+          use-github-cache: false
+
+      - name: Save lake cache
+        if: always()
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            StrataCLI/.lake
+          key: downstream-Boogie-${{ runner.os }}-${{ needs.gate.outputs.head_sha }}
+
+      - name: Restore .NET dependencies
+        working-directory: downstream
+        run: dotnet restore BoogieToStrata.sln
+
+      - name: Build Strata-Boogie
+        working-directory: downstream
+        run: dotnet build BoogieToStrata.sln --no-restore
+
+      - name: Run Strata-Boogie integration tests
+        working-directory: downstream
+        env:
+          # Point Boogie's tests at the strata binary built above. The CLI
+          # checkout lives at <workspace>/StrataCLI, sibling to downstream/.
+          STRATA_VERIFIER_PATH: ${{ github.workspace }}/StrataCLI/.lake/build/bin/strata
+        run: dotnet test IntegrationTests/BoogieToStrata.IntegrationTests.csproj --no-build --verbosity normal
