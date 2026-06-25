@@ -19,15 +19,16 @@
 failed=0
 TOP_DIR=$(pwd)
 
-# Dump embedded example files from the Strata package to a temp directory.
-# This avoids depending on .lake/packages/Strata/Examples which is only
-# populated when Strata is resolved via GitHub/Reservoir, not via package overrides.
-EXAMPLES_DIR=$(mktemp -d)
-trap 'rm -rf "$EXAMPLES_DIR"' EXIT
+# Accept examples directory as argument, or fall back to .lake/packages path.
+if [[ -n "${1:-}" ]]; then
+  EXAMPLES_DIR="$1"
+else
+  EXAMPLES_DIR="${TOP_DIR}/.lake/packages/Strata/Examples"
+fi
 
-echo "Extracting examples to $EXAMPLES_DIR..."
-if ! lake exe OutputExamples "$EXAMPLES_DIR"; then
-  echo "ERROR: Failed to extract examples. Is the Strata dependency built?"
+if [[ ! -d "$EXAMPLES_DIR" ]]; then
+  echo "ERROR: Examples directory not found at $EXAMPLES_DIR"
+  echo "Usage: run_examples.sh [examples-dir]"
   exit 1
 fi
 

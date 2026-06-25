@@ -3,18 +3,26 @@
 
   SPDX-License-Identifier: Apache-2.0 OR MIT
 -/
+module
+import Strata.Examples.Embedded
 
-/--
-Invokes the run_examples.sh test script.
-This file is meant to be run via `#eval` during elaboration,
-which will cause `lake build` to fail if the tests fail.
--/
-#eval show IO Unit from do
+public def main (_args : List String) : IO UInt32 := do
+  let tmpDir ← IO.Process.run { cmd := "mktemp", args := #["-d"] }
+  let examplesDir := tmpDir.trimAscii.toString
+
+  writeEmbeddedExamples ⟨examplesDir⟩
+  IO.println s!"Extracted examples to {examplesDir}"
+
   let result ← IO.Process.output {
     cmd := "bash"
-    args := #["scripts/run_examples.sh"]
+    args := #["scripts/run_examples.sh", examplesDir]
   }
   IO.print result.stdout
   if result.exitCode != 0 then
     IO.eprint result.stderr
-    throw <| IO.userError s!"run_examples.sh failed (exit {result.exitCode})"
+    IO.eprintln s!"run_examples.sh failed (exit {result.exitCode})"
+    IO.FS.removeDirAll ⟨examplesDir⟩
+    return 1
+
+  IO.FS.removeDirAll ⟨examplesDir⟩
+  return 0
