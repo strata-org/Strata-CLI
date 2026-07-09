@@ -185,39 +185,6 @@ def laurelAnalyzeBinaryCommand : Command where
     for diag in diagnostics do
       IO.println s!"{Std.format diag.fileRange.file}:{diag.fileRange.range.start}-{diag.fileRange.range.stop}: {diag.message}"
 
-/-- Build a map from assert labels to their source `FileRange`, by walking the
-    structured bodies of all procedures in a Core program. The concrete
-    interpreter reports a failing assertion only by its label, so this lets us
-    recover the original Java source location for diagnostics. -/
-private def collectAssertRanges (prog : Core.Program) : Std.HashMap String FileRange := Id.run do
-  let mut m : Std.HashMap String FileRange := {}
-  for decl in prog.decls do
-    if let some proc := decl.getProc? then
-      if let .ok ss := proc.body.getStructured then
-        for (label, md) in Core.Statement.Statements.collectAsserts ss do
-          if let some fr := Imperative.getFileRange md then
-            m := m.insert label fr
-  return m
-
-/-- Mark every bodied, non-recursive function in the program with
-    `inlineIfAllCanonical`, so the concrete interpreter unfolds it once all of
-    its arguments are concrete values. Verification keeps these functions
-    uninterpreted and discharges them via SMT, but concrete execution needs the
-    body inlined to reduce e.g. `int32$constraint(5)` to a boolean. (Recursive
-    functions are left alone to avoid non-termination; the fuel bound also
-    protects against runaway unfolding.) -/
-private def inlineBodiedFunctions (prog : Core.Program) : Core.Program :=
-  let addInline (f : Core.Function) : Core.Function :=
-    if f.body.isSome && !f.isRecursive
-        && !f.attr.contains .inlineIfAllCanonical && !f.attr.contains .inline
-    then { f with attr := f.attr.push .inlineIfAllCanonical }
-    else f
-  { prog with decls := prog.decls.map fun d =>
-      match d with
-      | .func f md => .func (addInline f) md
-      | .recFuncBlock fs md => .recFuncBlock (fs.map addInline) md
-      | other => other }
-
 /-- Normalize a procedure name for `--entry` matching. JVerify lowers a static
     method `pkg.Class.method` to a Core procedure named `pkg.Class?static_method`,
     so we drop the `?static` marker and treat the user-facing `#` separator as `_`.
@@ -280,13 +247,13 @@ def laurelInterpretCommand : Command where
       | .error e => exitFailure s!"Core type checking failed: {e.message}"
 
     -- Make bodied functions unfold during concrete execution.
-    let core := inlineBodiedFunctions core
+    let core := Core.Program.inlineBodiedFunctions core
 
     if let some dir := pflags.getString "keep-all-files" then
       IO.FS.createDirAll dir
       IO.FS.writeFile (dir ++ "/core.st") (toString (Std.format core))
 
-    let assertRanges := collectAssertRanges core
+    let assertRanges := Core.Program.collectAssertRanges core
 
     -- Determine which procedures to execute. An explicit --entry overrides the
     -- producer's markers; otherwise run every procedure marked `entry`.
