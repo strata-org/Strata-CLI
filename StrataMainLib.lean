@@ -12,6 +12,7 @@ import Strata.Backends.CBMC.GOTO.CoreToGOTOPipeline
 import StrataDDM.Integration.Java.Gen
 import Strata.Languages.Core.Verifier
 import Strata.Languages.Core.SarifOutput
+import Strata.Pipeline.Context
 import Strata.Languages.C_Simp.Verify
 import Strata.Languages.B3.Verifier.Program
 import Strata.Languages.Laurel.LaurelCompilationPipeline
@@ -612,7 +613,9 @@ def verifyCommand (mkDischarge : Core.MkDischargeFn := Core.mkDischargeFn) : Com
       parseOnly := pflags.getBool "parse-only",
       outputSarif := opts.outputSarif || pflags.getString "output-format" == some "sarif" }
     let fm ← pflags.buildDialectFileMap
-    let (pgm, inputCtx) ← readStrataProgram fm file
+    let mode := if opts.profile then Strata.Pipeline.OutputMode.profile else .quiet
+    let pctx ← Strata.Pipeline.PipelineContext.create (outputMode := mode)
+    let (pgm, inputCtx) ← pctx.withPhase "parse" do readStrataProgram fm file
     println! s!"Successfully parsed."
       if opts.parseOnly then return
       if opts.typeCheckOnly then
@@ -655,7 +658,7 @@ def verifyCommand (mkDischarge : Core.MkDischargeFn := Core.mkDischargeFn) : Com
           -- package that can depend on the StrataBoole package.
           throw <| IO.Error.userError "Boole dialect support requires the StrataBoole package"
         else
-          Strata.Core.verify pgm inputCtx proceduresToVerify opts (mkDischarge := mkDischarge)
+          Strata.Core.verify pgm inputCtx proceduresToVerify opts (mkDischarge := mkDischarge) (pipelineCtx := pctx)
       catch e =>
         println! f!"{e}"
         IO.Process.exit ExitCode.internalError
