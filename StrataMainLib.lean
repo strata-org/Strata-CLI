@@ -205,16 +205,123 @@ private def resolveEntryByName (prog : Core.Program) (entry : String) : Option C
       | some p => if normalizeEntryName p.header.name.name == target then some p else none
       | none => none
 
+/-- Flags for the Laurel interpret commands: `--fuel`, `--entry`, and
+    `--keep-all-files`. Shared by `laurelInterpret` (file input) and
+    `laurelInterpretBinary` (stdin input). Deliberately excludes the
+    solver-oriented flags in `verifyOptionsFlags` — the interpreter never
+    invokes a solver, so those would be silently ignored. -/
+private def laurelInterpretFlags : List Flag :=
+  [{ name := "fuel", help := "Maximum execution steps.", takesArg := .arg "n" },
+   { name := "entry",
+     help := "Override the entry point to execute, by procedure name. \
+              Defaults to the procedure(s) the producer marked with `entry` \
+              in the Laurel source.",
+     takesArg := .arg "proc" },
+   { name := "keep-all-files",
+     help := "Store intermediate programs in <dir>.",
+     takesArg := .arg "dir" }]
+
+/-- Concretely execute a Laurel Ion program (already loaded as bytes) and print
+    diagnostics. Shared implementation of `laurelInterpret` (file input) and
+    `laurelInterpretBinary` (stdin input). `inputFile` is the source path, if
+    any — used only to derive the `--keep-all-files` base name (stdin has none,
+    which `keepAllFilesBaseName` maps to `program`). -/
+private def runLaurelInterpret (ionBytes : ByteArray) (pflags : ParsedFlags)
+    (inputFile : Option String := none) : IO Unit := do
+  let options ← parseLaurelVerifyOptions pflags (inputFile := inputFile)
+  -- Reject `0` explicitly: `runEntry` would return `OutOfFuel` before executing
+  -- anything, which surfaces as exit 2 (failures found) with an empty diagnostics
+  -- block — indistinguishable from a run that really did exhaust its budget, or
+  -- worse, misread as assertion failures. Negatives are already rejected by
+  -- `toNat?`.
+  let fuel ← match pflags.getString "fuel" with
+    | some s => match s.toNat? with
+      | .some 0 => exitFailure s!"Invalid fuel: '0' (must be > 0)"
+      | .some n => pure n
+      | .none => exitFailure s!"Invalid fuel: '{s}'"
+    | none => pure 10000
+  let entryOverride := pflags.getString "entry"
+
+  let combinedProgram ← Strata.readLaurelIonProgram ionBytes
+
+  -- Laurel → Core, mirroring the verify path's translate step.
+  let core ← match ← Strata.Laurel.translate { options.translateOptions with analysisMode := .Execute } combinedProgram with
+    | (some core, _diags) => pure core
+    | (none, diags) => exitFailure s!"Laurel to Core translation failed: {diags.map (·.message)}"
+
+  -- Type-check with the default Core factory (the Laurel verify path uses
+  -- `Lambda.Factory.default`, not the Python `ReFactory`).
+  let core ← match Core.typeCheck Core.VerifyOptions.quiet core with
+    | .ok prog => pure prog
+    | .error e => exitFailure s!"Core type checking failed: {e.message}"
+
+  -- Make bodied functions unfold during concrete execution.
+  let core := Core.Program.inlineBodiedFunctions core
+
+  -- Persist the exact program the interpreter executes — the form produced
+  -- after the interpret-specific type-check + `inlineBodiedFunctions` steps.
+  -- Translation's per-pass intermediates stop before these steps, so under
+  -- `--keep-all-files` this is the most useful artifact for debugging an
+  -- interpret run. Mirrors the pipeline's `{prefix}.<...>.core.st` naming;
+  -- the prefix directory is already created by the translate pipeline above.
+  if let some pfx := options.translateOptions.keepAllFilesPrefix then
+    IO.FS.writeFile s!"{pfx}.interpret.core.st" (toString (Std.format core))
+
+  -- Determine which procedures to execute. An explicit --entry overrides the
+  -- producer's markers; otherwise run every procedure marked `entry`.
+  let entries ← match entryOverride with
+    | some name => match resolveEntryByName core name with
+      | some p => pure [p]
+      | none => exitFailure s!"entry procedure '{name}' not found"
+    | none =>
+      match Core.Program.entryProcedures core with
+      | [] => exitFailure "no entry point found: mark a procedure with `entry` in the \
+                           Laurel source, or pass --entry <proc>"
+      | ps => pure ps
+
+  match core.run with
+  | .ok E =>
+    IO.println s!"==== DIAGNOSTICS ===="
+    -- Run each entry from the freshly-initialized environment and report any
+    -- runtime assertion failure, mapped back to source. Track whether any
+    -- non-source error (fuel/Misc) occurred so we can still signal failure.
+    let mut hadOpaqueFailure := false
+    for p in entries do
+      let procName := p.header.name.name
+      let runEnv := Core.Program.runEntry E p fuel
+      match runEnv.error with
+      | none => pure ()  -- Execution completed; no failed assertions.
+      | some (.AssertFail label _e md) =>
+        -- A contract/assertion failed at runtime. Report it as a diagnostic on
+        -- stdout, mapped back to source via the metadata the failure carries.
+        -- Both cases stay on stdout so a single diagnostic-parsing contract
+        -- catches every assertion violation (see the exit-code note below).
+        -- Wording stays "assertion does not hold" rather than using the
+        -- metadata's property summary: JVerify's expected diagnostics pin this
+        -- exact text, so switching to e.g. "precondition does not hold" would be
+        -- a separate, user-visible change.
+        match Imperative.getFileRange md with
+        | some fr =>
+          IO.println s!"{Std.format fr.file}:{fr.range.start}-{fr.range.stop}: assertion does not hold"
+        | none =>
+          IO.println s!"<no source>: assertion '{label}' in '{procName}' does not hold"
+      | some e =>
+        -- OutOfFuel, Misc, etc. — these have no source range; surface raw.
+        IO.eprintln s!"'{procName}': {Std.format (Imperative.EvalError.toFormat e)}"
+        hadOpaqueFailure := true
+    -- Assertion failures are reported as diagnostics above; the caller infers
+    -- failure by parsing the `==== DIAGNOSTICS ====` output. Opaque failures
+    -- (out of fuel / internal errors) carry no diagnostic, so signal those
+    -- through the exit code directly.
+    if hadOpaqueFailure then
+      IO.Process.exit ExitCode.failuresFound
+  | .error diag =>
+    exitFailure s!"interpreter setup failed: {diag}"
+
 def laurelInterpretCommand : Command where
   name := "laurelInterpret"
   args := [ "file" ]
-  flags := [{ name := "fuel", help := "Maximum execution steps.", takesArg := .arg "n" },
-            { name := "entry",
-              help := "Override the entry point to execute, by procedure name. \
-                       Defaults to the procedure(s) the producer marked with `entry` \
-                       in the Laurel source.",
-              takesArg := .arg "proc" }]
-            ++ verifyOptionsFlags
+  flags := laurelInterpretFlags
   help := "Concretely interpret a Laurel Ion program read from the given file (Laurel → Core → execute) \
            and print diagnostics. The entry point is the procedure marked `entry` by the \
            producer (or, if given, --entry by name); it is run with contracts treated as \
@@ -224,88 +331,19 @@ def laurelInterpretCommand : Command where
            non-zero exit code is reserved for errors that carry no diagnostic (out of fuel, \
            internal errors, setup failures)."
   callback := fun v pflags => do
-    let options ← parseLaurelVerifyOptions pflags (inputFile := some v[0])
-    let fuel ← match pflags.getString "fuel" with
-      | some s => match s.toNat? with
-        | .some n => pure n
-        | .none => exitFailure s!"Invalid fuel: '{s}'"
-      | none => pure 10000
-    let entryOverride := pflags.getString "entry"
-
     let ionBytes ← IO.FS.readBinFile v[0]
-    let combinedProgram ← Strata.readLaurelIonProgram ionBytes
+    runLaurelInterpret ionBytes pflags (inputFile := some v[0])
 
-    -- Laurel → Core, mirroring the verify path's translate step.
-    let core ← match ← Strata.Laurel.translate { options.translateOptions with analysisMode := .Execute } combinedProgram with
-      | (some core, _diags) => pure core
-      | (none, diags) => exitFailure s!"Laurel to Core translation failed: {diags.map (·.message)}"
-
-    -- Type-check with the default Core factory (the Laurel verify path uses
-    -- `Lambda.Factory.default`, not the Python `ReFactory`).
-    let core ← match Core.typeCheck Core.VerifyOptions.quiet core with
-      | .ok prog => pure prog
-      | .error e => exitFailure s!"Core type checking failed: {e.message}"
-
-    -- Make bodied functions unfold during concrete execution.
-    let core := Core.Program.inlineBodiedFunctions core
-
-    -- Persist the exact program the interpreter executes — the form produced
-    -- after the interpret-specific type-check + `inlineBodiedFunctions` steps.
-    -- Translation's per-pass intermediates stop before these steps, so under
-    -- `--keep-all-files` this is the most useful artifact for debugging an
-    -- interpret run. Mirrors the pipeline's `{prefix}.<...>.core.st` naming;
-    -- the prefix directory is already created by the translate pipeline above.
-    if let some pfx := options.translateOptions.keepAllFilesPrefix then
-      IO.FS.writeFile s!"{pfx}.interpret.core.st" (toString (Std.format core))
-
-    let assertRanges := Core.Program.collectAssertRanges core
-
-    -- Determine which procedures to execute. An explicit --entry overrides the
-    -- producer's markers; otherwise run every procedure marked `entry`.
-    let entries ← match entryOverride with
-      | some name => match resolveEntryByName core name with
-        | some p => pure [p]
-        | none => exitFailure s!"entry procedure '{name}' not found"
-      | none =>
-        match Core.Program.entryProcedures core with
-        | [] => exitFailure "no entry point found: mark a procedure with `entry` in the \
-                             Laurel source, or pass --entry <proc>"
-        | ps => pure ps
-
-    match core.run with
-    | .ok E =>
-      IO.println s!"==== DIAGNOSTICS ===="
-      -- Run each entry from the freshly-initialized environment and report any
-      -- runtime assertion failure, mapped back to source. Track whether any
-      -- non-source error (fuel/Misc) occurred so we can still signal failure.
-      let mut hadOpaqueFailure := false
-      for p in entries do
-        let procName := p.header.name.name
-        let runEnv := Core.Program.runEntry E p fuel
-        match runEnv.error with
-        | none => pure ()  -- Execution completed; no failed assertions.
-        | some (.AssertFail label _e) =>
-          -- A contract/assertion failed at runtime. Report it as a diagnostic on
-          -- stdout, mapped back to source when possible. Both cases stay on
-          -- stdout so a single diagnostic-parsing contract catches every
-          -- assertion violation (see the exit-code note below).
-          match assertRanges[label]? with
-          | some fr =>
-            IO.println s!"{Std.format fr.file}:{fr.range.start}-{fr.range.stop}: assertion does not hold"
-          | none =>
-            IO.println s!"<no source>: assertion '{label}' in '{procName}' does not hold"
-        | some e =>
-          -- OutOfFuel, Misc, etc. — these have no source range; surface raw.
-          IO.eprintln s!"'{procName}': {Std.format (Imperative.EvalError.toFormat e)}"
-          hadOpaqueFailure := true
-      -- Assertion failures are reported as diagnostics above; the caller infers
-      -- failure by parsing the `==== DIAGNOSTICS ====` output. Opaque failures
-      -- (out of fuel / internal errors) carry no diagnostic, so signal those
-      -- through the exit code directly.
-      if hadOpaqueFailure then
-        IO.Process.exit ExitCode.failuresFound
-    | .error diag =>
-      exitFailure s!"interpreter setup failed: {diag}"
+def laurelInterpretBinaryCommand : Command where
+  name := "laurelInterpretBinary"
+  args := []
+  flags := laurelInterpretFlags
+  help := "Concretely interpret a Laurel Ion program read from stdin (Laurel → Core → execute) \
+           and print diagnostics. Combines multiple input files. See `laurelInterpret` for \
+           the entry-point selection rules and the diagnostic/exit-code contract."
+  callback := fun _ pflags => do
+    let ionBytes ← (← IO.getStdin).readBinToEnd
+    runLaurelInterpret ionBytes pflags
 
 def laurelParseCommand : Command where
   name := "laurelParse"
@@ -691,7 +729,7 @@ def commandGroups : List CommandGroup := [
                  StrataPython.Cli.pyInterpretCommand] },
   { name := "Laurel"
     commands := [laurelAnalyzeCommand, laurelAnalyzeBinaryCommand,
-                 laurelInterpretCommand,
+                 laurelInterpretCommand, laurelInterpretBinaryCommand,
                  laurelAnalyzeToGotoCommand, laurelParseCommand,
                  laurelPrintCommand, laurelToCoreCommand] },
 ]
