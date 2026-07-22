@@ -471,7 +471,7 @@ def laurelToCoreCommand : Command where
       | some coreProgram => IO.println (prettyPrintCore coreProgram)
 
 private def validPasses :=
-  "inlineProcedures, loopElim, callElim, filterProcedures, removeIrrelevantAxioms"
+  "inlineProcedures, insertLoopInvariantAsserts, loopElim, callElim, filterProcedures, removeIrrelevantAxioms"
 
 /-- A single transform pass together with the `--procedures`/`--functions`
     that were specified immediately after it on the command line. -/
@@ -540,6 +540,8 @@ def transformCommand : Command where
             passes := passes ++ [Strata.Core.passInlineAll]
           else
             passes := passes ++ [Strata.Core.passInlineMatching pc.procedures]
+        | "insertLoopInvariantAsserts" =>
+          passes := passes ++ [Strata.Core.passInsertLoopInvariantAsserts]
         | "loopElim" =>
           passes := passes ++ [Strata.Core.passLoopElim]
         | "callElim" =>
