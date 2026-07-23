@@ -60,6 +60,26 @@ for test_file in *.st; do
     fi
 done
 
+# ── keep-all-files test ─────────────────────────────────────────────
+# `strata verify --keep-all-files <dir>` must emit the intermediate Core phase
+# programs *inside* <dir>, named <baseName>.<n>.<phase>.core.st. Use --check so
+# the test exercises only the transform pipeline (no SMT solver needed).
+kaf_src="SimpleProc.core.st"
+if [ -f "$kaf_src" ]; then
+    kaf_dir=$(mktemp -d)
+    ${TOP_DIR}/.lake/build/bin/strata verify --check --keep-all-files "$kaf_dir" "$kaf_src" > /dev/null 2>&1
+    if ls "$kaf_dir"/SimpleProc.*.core.st > /dev/null 2>&1; then
+        echo "Test passed: verify --keep-all-files $kaf_src"
+    else
+        echo "ERROR: --keep-all-files did not emit intermediate files inside the directory"
+        ls -la "$kaf_dir"
+        failed=1
+    fi
+    rm -rf "$kaf_dir"
+else
+    echo "WARNING: keep-all-files test skipped, $kaf_src not found"
+fi
+
 # ── Transform tests ─────────────────────────────────────────────────
 # Transform test files live in expected/ as <base>.<pass1>.<pass2>.core.st.
 # The naming convention encodes the source file and passes:

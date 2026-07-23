@@ -173,7 +173,7 @@ def javaGenCommand : Command where
 def laurelAnalyzeBinaryCommand : Command where
   name := "laurelAnalyzeBinary"
   args := []
-  flags := laurelVerifyOptionsFlags
+  flags := verifyOptionsFlags
   help := "Verify Laurel Ion programs read from stdin and print diagnostics. Combines multiple input files."
   callback := fun _ pflags => do
     let options ← parseLaurelVerifyOptions pflags
@@ -214,7 +214,7 @@ def laurelInterpretCommand : Command where
                        Defaults to the procedure(s) the producer marked with `entry` \
                        in the Laurel source.",
               takesArg := .arg "proc" }]
-            ++ laurelVerifyOptionsFlags
+            ++ verifyOptionsFlags
   help := "Concretely interpret a Laurel Ion program read from the given file (Laurel → Core → execute) \
            and print diagnostics. The entry point is the procedure marked `entry` by the \
            producer (or, if given, --entry by name); it is run with contracts treated as \
@@ -224,7 +224,7 @@ def laurelInterpretCommand : Command where
            non-zero exit code is reserved for errors that carry no diagnostic (out of fuel, \
            internal errors, setup failures)."
   callback := fun v pflags => do
-    let options ← parseLaurelVerifyOptions pflags
+    let options ← parseLaurelVerifyOptions pflags (inputFile := some v[0])
     let fuel ← match pflags.getString "fuel" with
       | some s => match s.toNat? with
         | .some n => pure n
@@ -249,9 +249,14 @@ def laurelInterpretCommand : Command where
     -- Make bodied functions unfold during concrete execution.
     let core := Core.Program.inlineBodiedFunctions core
 
-    if let some dir := pflags.getString "keep-all-files" then
-      IO.FS.createDirAll dir
-      IO.FS.writeFile (dir ++ "/core.st") (toString (Std.format core))
+    -- Persist the exact program the interpreter executes — the form produced
+    -- after the interpret-specific type-check + `inlineBodiedFunctions` steps.
+    -- Translation's per-pass intermediates stop before these steps, so under
+    -- `--keep-all-files` this is the most useful artifact for debugging an
+    -- interpret run. Mirrors the pipeline's `{prefix}.<...>.core.st` naming;
+    -- the prefix directory is already created by the translate pipeline above.
+    if let some pfx := options.translateOptions.keepAllFilesPrefix then
+      IO.FS.writeFile s!"{pfx}.interpret.core.st" (toString (Std.format core))
 
     let assertRanges := Core.Program.collectAssertRanges core
 
@@ -313,10 +318,10 @@ def laurelParseCommand : Command where
 def laurelAnalyzeCommand : Command where
   name := "laurelAnalyze"
   args := [ "file" ]
-  flags := laurelVerifyOptionsFlags
+  flags := verifyOptionsFlags
   help := "Analyze a Laurel source file. Write diagnostics to stdout."
   callback := fun v pflags => do
-    let options ← parseLaurelVerifyOptions pflags
+    let options ← parseLaurelVerifyOptions pflags (inputFile := some v[0])
     let laurelProgram ← Strata.readLaurelTextFile v[0]
     let (vcResultsOption, errors) ← Strata.Laurel.verifyToVcResults laurelProgram options
     if !errors.isEmpty then
@@ -576,11 +581,19 @@ def verifyCommand (mkDischarge : Core.MkDischargeFn := Core.mkDischargeFn) : Com
     let file := v[0]
     let proceduresToVerify := pflags.getString "procedures" |>.map (·.splitToList (· == ','))
     let opts ← parseVerifyOptions pflags { VerifyOptions.default with verbose := .quiet }
+      (inputFile := some file)
     let opts := { opts with
       checkOnly := pflags.getBool "check",
       typeCheckOnly := pflags.getBool "type-check",
       parseOnly := pflags.getBool "parse-only",
       outputSarif := opts.outputSarif || pflags.getString "output-format" == some "sarif" }
+    -- `--keep-all-files` has no effect for B3 files: the B3 pipeline runs no
+    -- Core transform phases, so there are no intermediate programs to emit.
+    -- Reject it up front — before the parse-only / type-check-only early
+    -- returns below, which would otherwise silently ignore the flag — and exit
+    -- with the user-error code (1), not internal-error (3).
+    if (file.endsWith ".b3.st" || file.endsWith ".b3cst.st") && opts.keepAllFilesPrefix.isSome then
+      exitUserError "--keep-all-files is not supported for B3 files (.b3.st/.b3cst.st)."
     let fm ← pflags.buildDialectFileMap
     let mode := if opts.profile then Strata.Pipeline.OutputMode.profile else .quiet
     let pctx ← Strata.Pipeline.PipelineContext.create (outputMode := mode)
@@ -627,7 +640,8 @@ def verifyCommand (mkDischarge : Core.MkDischargeFn := Core.mkDischargeFn) : Com
           -- package that can depend on the StrataBoole package.
           throw <| IO.Error.userError "Boole dialect support requires the StrataBoole package"
         else
-          Strata.Core.verify pgm inputCtx proceduresToVerify opts (mkDischarge := mkDischarge) (pipelineCtx := pctx)
+          Strata.Core.verify pgm inputCtx proceduresToVerify opts
+            (mkDischarge := mkDischarge) (pipelineCtx := pctx)
       catch e =>
         println! f!"{e}"
         IO.Process.exit ExitCode.internalError
