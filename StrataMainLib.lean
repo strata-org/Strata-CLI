@@ -640,18 +640,33 @@ def verifyCommand (mkDischarge : Core.MkDischargeFn := Core.mkDischargeFn) : Com
         let posStr := Imperative.MetaData.formatFileRangeD vcResult.obligation.metadata (some inputCtx.fileMap)
         println! f!"{posStr} [{vcResult.obligation.label}]: \
                       {vcResult.formatOutcome}"
-      let success := vcResults.all Core.VCResult.isSuccess
+      -- Success/failure are mode-specific. `bugFinding` treats only a definite
+      -- bug as an error (docs/VerificationModes.md), and runs the
+      -- satisfiability check alone, so the deductive predicate reported every
+      -- goal of a correct program as failed with a non-zero exit. Only
+      -- `bugFinding` is remapped here: `bugFindingAssumingCompleteSpec` runs
+      -- both checks and any counterexample is an error there, which is what
+      -- `isSuccess`/`isNotSuccess` already express.
+      let goalPassed : Core.VCResult → Bool :=
+        match opts.checkMode with
+        | .bugFinding => Core.VCResult.isBugFindingSuccess
+        | _ => Core.VCResult.isSuccess
+      let goalFailed : Core.VCResult → Bool :=
+        match opts.checkMode with
+        | .bugFinding => Core.VCResult.isBugFindingFailure
+        | _ => Core.VCResult.isNotSuccess
+      let success := vcResults.all goalPassed
       if success && !opts.checkOnly then
         println! f!"All {vcResults.size} goals passed."
       else if success && opts.checkOnly then
         println! f!"Skipping verification."
       else
-        let provedGoalCount := (vcResults.filter Core.VCResult.isSuccess).size
-        let failedGoalCount := (vcResults.filter Core.VCResult.isNotSuccess).size
+        let provedGoalCount := (vcResults.filter goalPassed).size
+        let failedGoalCount := (vcResults.filter goalFailed).size
         -- Encoding failures, solver crashes, or per-check SMT errors (exit 3)
         let hasImplError := vcResults.any (fun r => r.isImplementationError || r.hasSMTError)
         -- Assertion violations that are not timeouts or internal errors (exit 2)
-        let hasFailure := vcResults.any (fun r => !r.isSuccess && !r.isTimeout && !r.isImplementationError && !r.hasSMTError)
+        let hasFailure := vcResults.any (fun r => goalFailed r && !r.isTimeout && !r.isImplementationError && !r.hasSMTError)
         println! f!"Finished with {provedGoalCount} goals passed, {failedGoalCount} failed."
         if hasImplError then
           IO.Process.exit ExitCode.internalError
