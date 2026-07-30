@@ -179,7 +179,7 @@ def laurelAnalyzeBinaryCommand : Command where
     let options ← parseLaurelVerifyOptions pflags
     let stdinBytes ← (← IO.getStdin).readBinToEnd
     let combinedProgram ← Strata.readLaurelIonProgram stdinBytes
-    let diagnostics ← Strata.Laurel.verifyToDiagnosticModels combinedProgram options
+    let diagnostics ← Strata.Laurel.verifyToMessages combinedProgram options
 
     IO.println s!"==== DIAGNOSTICS ===="
     for diag in diagnostics do
