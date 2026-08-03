@@ -279,44 +279,30 @@ private def runLaurelInterpret (ionBytes : ByteArray) (pflags : ParsedFlags)
                            Laurel source, or pass --entry <proc>"
       | ps => pure ps
 
-  match core.run with
-  | .ok E =>
-    IO.println s!"==== DIAGNOSTICS ===="
-    -- Run each entry from the freshly-initialized environment and report any
-    -- runtime assertion failure, mapped back to source. Track whether any
-    -- non-source error (fuel/Misc) occurred so we can still signal failure.
-    let mut hadOpaqueFailure := false
-    for p in entries do
-      let procName := p.header.name.name
-      let runEnv := Core.Program.runEntry E p fuel
-      match runEnv.error with
-      | none => pure ()  -- Execution completed; no failed assertions.
-      | some (.AssertFail label _e md) =>
-        -- A contract/assertion failed at runtime. Report it as a diagnostic on
-        -- stdout, mapped back to source via the metadata the failure carries.
-        -- Both cases stay on stdout so a single diagnostic-parsing contract
-        -- catches every assertion violation (see the exit-code note below).
-        -- Wording stays "assertion does not hold" rather than using the
-        -- metadata's property summary: JVerify's expected diagnostics pin this
-        -- exact text, so switching to e.g. "precondition does not hold" would be
-        -- a separate, user-visible change.
-        match Imperative.getFileRange md with
-        | some fr =>
-          IO.println s!"{Std.format fr.file}:{fr.range.start}-{fr.range.stop}: assertion does not hold"
-        | none =>
-          IO.println s!"<no source>: assertion '{label}' in '{procName}' does not hold"
-      | some e =>
-        -- OutOfFuel, Misc, etc. — these have no source range; surface raw.
-        IO.eprintln s!"'{procName}': {Std.format (Imperative.EvalError.toFormat e)}"
-        hadOpaqueFailure := true
-    -- Assertion failures are reported as diagnostics above; the caller infers
-    -- failure by parsing the `==== DIAGNOSTICS ====` output. Opaque failures
-    -- (out of fuel / internal errors) carry no diagnostic, so signal those
-    -- through the exit code directly.
-    if hadOpaqueFailure then
-      IO.Process.exit ExitCode.failuresFound
-  | .error diag =>
-    exitFailure s!"interpreter setup failed: {diag}"
+  -- Run the entries. `interpretEntries` is shared with the Laurel execute
+  -- tests, so the evaluator configuration this command depends on — `assume`s
+  -- treated as no-ops, and every assertion failure collected rather than
+  -- halting on the first — is defined and regression-tested in one place.
+  let outcome ← match Core.Program.interpretEntries core entries fuel with
+    | .ok outcome => pure outcome
+    | .error diag => exitFailure s!"interpreter setup failed: {diag}"
+
+  IO.println s!"==== DIAGNOSTICS ===="
+  -- Assertion failures go to stdout, mapped back to source where possible, so
+  -- a single diagnostic-parsing contract catches every assertion violation.
+  for diag in outcome.diagnostics do
+    IO.println s!"{Std.format diag.fileRange.file}:{diag.fileRange.range.start}-{diag.fileRange.range.stop}: {diag.message}"
+  for (procName, label) in outcome.unmapped do
+    IO.println s!"<no source>: assertion '{label}' in '{procName}' does not hold"
+  -- OutOfFuel, Misc, etc. — these have no source range; surface raw.
+  for (procName, e) in outcome.errors do
+    IO.eprintln s!"'{procName}': {Imperative.EvalError.toFormat (P := Core.Expression) e}"
+  -- Assertion failures are reported as diagnostics above; the caller infers
+  -- failure by parsing the `==== DIAGNOSTICS ====` output. Opaque failures
+  -- (out of fuel / internal errors) carry no diagnostic, so signal those
+  -- through the exit code directly.
+  unless outcome.errors.isEmpty do
+    IO.Process.exit ExitCode.failuresFound
 
 def laurelInterpretCommand : Command where
   name := "laurelInterpret"
@@ -325,7 +311,7 @@ def laurelInterpretCommand : Command where
   help := "Concretely interpret a Laurel Ion program read from the given file (Laurel → Core → execute) \
            and print diagnostics. The entry point is the procedure marked `entry` by the \
            producer (or, if given, --entry by name); it is run with contracts treated as \
-           runtime assertions. \
+           runtime assertions and `assume`s treated as no-ops. \
            Assertion violations are reported as diagnostics under `==== DIAGNOSTICS ====` on \
            stdout (the caller detects failures by parsing them); the process still exits 0. A \
            non-zero exit code is reserved for errors that carry no diagnostic (out of fuel, \

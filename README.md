@@ -103,7 +103,11 @@ Codes 1-2 are user-actionable (fix the input or the code under analysis). Codes 
 
 ### Exception: `laurelInterpret` / `laurelInterpretBinary`
 
-`laurelInterpret` and `laurelInterpretBinary` intentionally exit 0 even when assertions fail (mirroring `laurelAnalyzeBinary` for Java Front-End diagnostic parsing). Assertion failures are reported as stdout diagnostics under the `==== DIAGNOSTICS ====` sentinel. Callers must parse stdout for `==== DIAGNOSTICS ====` / `assertion does not hold` lines rather than relying on a non-zero exit code to detect violations. Exit codes 1/3/4 still apply for user errors, internal errors, and known limitations; exit 2 is used only for `OutOfFuel` and other opaque runtime errors with no associated source diagnostic.
+`laurelInterpret` and `laurelInterpretBinary` intentionally exit 0 even when assertions fail (mirroring `laurelAnalyzeBinary` for Java Front-End diagnostic parsing). Assertion failures are reported as stdout diagnostics under the `==== DIAGNOSTICS ====` sentinel. Callers must parse stdout for `==== DIAGNOSTICS ====` and the `<path>:<start>-<stop>: <message>` lines that follow it, rather than relying on a non-zero exit code to detect violations. Exit codes 1/3/4 still apply for user errors, internal errors, and known limitations; exit 2 is used only for `OutOfFuel` and other opaque runtime errors with no associated source diagnostic.
+
+The message carries the failing property's kind, matching `laurelAnalyzeBinary`: `assertion does not hold` for a source `assert`, and `precondition does not hold` / `postcondition does not hold` for a contract obligation the translator inserted. Treat the message as opaque text keyed off the line shape — do not match on `assertion does not hold` alone, which misses every contract violation.
+
+Because Laurel's `assume` is verification scaffolding with no runtime meaning, the interpreter skips assumes rather than halting on them. A *free* (assume-only) contract condition therefore produces no interpret diagnostic and no non-zero exit, even where the verifier would report it: `free requires false` on a callee emits no call-site check, so a run whose only obligation was that condition exits 0 with an empty diagnostics section.
 
 ## File Structure
 
