@@ -591,6 +591,115 @@ def transformCommand : Command where
       | .ok (program, _) => IO.print (Core.formatProgram program)
       | .error e => exitFailure s!"Transform failed: {e}"
 
+/-- The three buckets the verification summary line reports.
+
+    The pass and fail predicates a check mode supplies are independent, not
+    complements. In `bugFinding` they are `isBugFindingSuccess` and
+    `isBugFindingFailure`, and a goal whose satisfiability check came back
+    `unknown`, timed out, or failed to encode satisfies neither, so it belongs
+    to `undecided`. `deductive` and `bugFindingAssumingCompleteSpec` pass
+    complementary predicates, so `undecided` is 0 for them. -/
+structure GoalCounts where
+  passed : Nat
+  failed : Nat
+  undecided : Nat
+  deriving Repr, DecidableEq
+
+/-- Bucket every element of `xs` by a pass and a fail predicate, counting the
+    remainder positively. Counting `undecided` as its own filter rather than as
+    `xs.size - passed - failed` keeps predicate overlap visible: overlapping
+    predicates make `total` exceed `xs.size` instead of being truncated away by
+    `Nat` subtraction. -/
+def countGoals {α : Type} (passed failed : α → Bool) (xs : Array α) : GoalCounts :=
+  { passed := (xs.filter passed).size
+    failed := (xs.filter failed).size
+    undecided := (xs.filter (fun x => !passed x && !failed x)).size }
+
+/-- The count the summary line divides into buckets. -/
+def GoalCounts.total (c : GoalCounts) : Nat := c.passed + c.failed + c.undecided
+
+/-! ### Guards for the goal accounting
+
+`docs/VerificationModes.md` classifies each of the nine satisfiability/validity
+outcomes per mode, and `bugFinding` is the mode with three categories rather
+than two: `pass`, `error`, and `note`. The summary line has to account for all
+three, so these guards pin (1) that bucketing never drops or double-counts an
+element, and (2) which of the two `bugFinding` predicates holds in each of the
+nine cells. -/
+
+section GoalCountGuards
+
+/-- Stand-ins for `(goalPassed r, goalFailed r)`, covering the overlap case that
+    no current mode produces, so that the invariant below is not vacuous. -/
+private def predicatePairs : Array (Bool × Bool) :=
+  #[(true, false), (false, true), (false, false), (true, true)]
+
+private def tallyOf (xs : Array (Bool × Bool)) : GoalCounts :=
+  countGoals Prod.fst Prod.snd xs
+
+-- Disjoint predicates: the three buckets partition the input.
+#guard (tallyOf #[(true, false), (false, true), (false, false)])
+  = { passed := 1, failed := 1, undecided := 1 }
+#guard (tallyOf #[(true, false), (false, true), (false, false)]).total = 3
+
+-- The `bugFinding` shape from a real run: some passed, none failed, the rest
+-- undecided. Before the `undecided` bucket existed this reported 4 and 0 for a
+-- seven-goal program.
+#guard (tallyOf (Array.replicate 4 (true, false) ++ Array.replicate 3 (false, false)))
+  = { passed := 4, failed := 0, undecided := 3 }
+#guard (tallyOf (Array.replicate 4 (true, false) ++ Array.replicate 3 (false, false))).total = 7
+
+-- Overlap is reported, not hidden. Both an element matching both predicates
+-- and a genuine remainder have to be present for this to bite: computing
+-- `undecided` as `xs.size - passed - failed` truncates to 0 here and loses the
+-- remaining element, which is why it is a filter and not a subtraction.
+#guard (tallyOf #[(true, true), (false, false)])
+  = { passed := 1, failed := 1, undecided := 1 }
+#guard (tallyOf #[(true, true), (false, false)]).total = 3
+
+-- Every combination is accounted for exactly once when the predicates are
+-- disjoint, and the empty run is empty.
+#guard (tallyOf #[]).total = 0
+
+open Strata.SMT in
+/-- The nine outcome cells of `docs/VerificationModes.md`, as
+    (satisfiability, validity) pairs. -/
+private def outcomeCell (sat val : Imperative.SMT.Result (Ident := Core.Expression.Ident))
+    : Core.VCOutcome :=
+  { satisfiabilityProperty := sat, validityProperty := val }
+
+private def satR : Imperative.SMT.Result (Ident := Core.Expression.Ident) := .sat []
+private def unsatR : Imperative.SMT.Result (Ident := Core.Expression.Ident) := .unsat
+private def unknownR : Imperative.SMT.Result (Ident := Core.Expression.Ident) := .unknown
+
+-- `bugFinding` errors: the three `unsat`-satisfiability cells (always false
+-- and reachable, always false if reached, unreachable).
+#guard (outcomeCell unsatR satR).bugFindingFailure
+#guard (outcomeCell unsatR unknownR).bugFindingFailure
+#guard (outcomeCell unsatR unsatR).bugFindingFailure
+
+-- `bugFinding` passes and notes that `bugFindingSuccess` accepts.
+#guard (outcomeCell satR unsatR).bugFindingSuccess
+#guard (outcomeCell unknownR unsatR).bugFindingSuccess
+#guard (outcomeCell satR satR).bugFindingSuccess
+#guard (outcomeCell satR unknownR).bugFindingSuccess
+
+-- The two cells that satisfy neither predicate. These are the goals the
+-- summary line used to drop; they are what `undecided` counts.
+#guard !(outcomeCell unknownR satR).bugFindingSuccess
+    && !(outcomeCell unknownR satR).bugFindingFailure
+#guard !(outcomeCell unknownR unknownR).bugFindingSuccess
+    && !(outcomeCell unknownR unknownR).bugFindingFailure
+
+-- No cell is both a success and a failure, which is what makes the three
+-- buckets a partition in `bugFinding`.
+#guard [ outcomeCell satR satR, outcomeCell satR unsatR, outcomeCell satR unknownR
+       , outcomeCell unsatR satR, outcomeCell unsatR unsatR, outcomeCell unsatR unknownR
+       , outcomeCell unknownR satR, outcomeCell unknownR unsatR, outcomeCell unknownR unknownR
+       ].all (fun o => !(o.bugFindingSuccess && o.bugFindingFailure))
+
+end GoalCountGuards
+
 def verifyCommand (mkDischarge : Core.MkDischargeFn := Core.mkDischargeFn) : Command where
   name := "verify"
   args := [ "file" ]
@@ -680,19 +789,44 @@ def verifyCommand (mkDischarge : Core.MkDischargeFn := Core.mkDischargeFn) : Com
         let posStr := Imperative.MetaData.formatFileRangeD vcResult.obligation.metadata (some inputCtx.fileMap)
         println! f!"{posStr} [{vcResult.obligation.label}]: \
                       {vcResult.formatOutcome}"
-      let success := vcResults.all Core.VCResult.isSuccess
+      -- Success/failure are mode-specific. `bugFinding` treats only a definite
+      -- bug as an error (docs/VerificationModes.md), and runs the
+      -- satisfiability check alone, so the deductive predicate reported every
+      -- goal of a correct program as failed with a non-zero exit. Only
+      -- `bugFinding` is remapped here: `bugFindingAssumingCompleteSpec` runs
+      -- both checks and any counterexample is an error there, which is what
+      -- `isSuccess`/`isNotSuccess` already express.
+      let goalPassed : Core.VCResult → Bool :=
+        match opts.checkMode with
+        | .bugFinding => Core.VCResult.isBugFindingSuccess
+        | _ => Core.VCResult.isSuccess
+      let goalFailed : Core.VCResult → Bool :=
+        match opts.checkMode with
+        | .bugFinding => Core.VCResult.isBugFindingFailure
+        | _ => Core.VCResult.isNotSuccess
+      let success := vcResults.all goalPassed
       if success && !opts.checkOnly then
         println! f!"All {vcResults.size} goals passed."
       else if success && opts.checkOnly then
         println! f!"Skipping verification."
       else
-        let provedGoalCount := (vcResults.filter Core.VCResult.isSuccess).size
-        let failedGoalCount := (vcResults.filter Core.VCResult.isNotSuccess).size
+        -- `goalPassed` and `goalFailed` are independent predicates, not
+        -- complements, so a goal can satisfy neither. Reporting only two counts
+        -- dropped those goals from a line that carries no total: a seven-goal
+        -- `bugFinding` run printed "4 goals passed, 0 failed".
+        let counts := countGoals goalPassed goalFailed vcResults
         -- Encoding failures, solver crashes, or per-check SMT errors (exit 3)
         let hasImplError := vcResults.any (fun r => r.isImplementationError || r.hasSMTError)
         -- Assertion violations that are not timeouts or internal errors (exit 2)
-        let hasFailure := vcResults.any (fun r => !r.isSuccess && !r.isTimeout && !r.isImplementationError && !r.hasSMTError)
-        println! f!"Finished with {provedGoalCount} goals passed, {failedGoalCount} failed."
+        let hasFailure := vcResults.any (fun r => goalFailed r && !r.isTimeout && !r.isImplementationError && !r.hasSMTError)
+        -- `deductive` and `bugFindingAssumingCompleteSpec` supply complementary
+        -- predicates, so `undecided` is 0 and this line is unchanged for them.
+        if counts.undecided == 0 then
+          println! f!"Finished with {counts.passed} goals passed, {counts.failed} failed."
+        else
+          println! f!"Finished with {counts.passed} goals passed, \
+                        {counts.failed} failed, {counts.undecided} undecided \
+                        (of {vcResults.size} goals)."
         if hasImplError then
           IO.Process.exit ExitCode.internalError
         else if hasFailure then
