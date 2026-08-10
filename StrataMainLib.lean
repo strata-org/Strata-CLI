@@ -626,7 +626,7 @@ def verifyCommand (mkDischarge : Core.MkDischargeFn := Core.mkDischargeFn) : Com
       -- Full verification
       let vcResults ← try
         if file.endsWith ".csimp.st" then
-          C_Simp.verify pgm opts
+          C_Simp.verify pgm opts (mkDischarge := mkDischarge)
         else if file.endsWith ".b3.st" || file.endsWith ".b3cst.st" then
           let ast ← match B3.Verifier.programToB3AST pgm with
             | Except.error msg => throw (IO.userError s!"Failed to convert to B3 AST: {msg}")
@@ -665,8 +665,15 @@ def verifyCommand (mkDischarge : Core.MkDischargeFn := Core.mkDischargeFn) : Com
           Core.Sarif.writeSarifOutput opts.checkMode files vcResults (file ++ ".sarif")
       for vcResult in vcResults do
         let posStr := Imperative.MetaData.formatFileRangeD vcResult.obligation.metadata (some inputCtx.fileMap)
+        -- `formatOutcome` omits the counterexample model, so render it here,
+        -- inline on the obligation line to keep one line per obligation for
+        -- tools that parse this output.
+        let modelFmt :=
+          if vcResult.verbose >= .models && !vcResult.lexprModel.isEmpty then
+            f!" Model: {Std.format vcResult.lexprModel}"
+          else f!""
         println! f!"{posStr} [{vcResult.obligation.label}]: \
-                      {vcResult.formatOutcome}"
+                      {vcResult.formatOutcome}{modelFmt}"
       let success := vcResults.all Core.VCResult.isSuccess
       if success && !opts.checkOnly then
         println! f!"All {vcResults.size} goals passed."
@@ -685,28 +692,87 @@ def verifyCommand (mkDischarge : Core.MkDischargeFn := Core.mkDischargeFn) : Com
         else if hasFailure then
           IO.Process.exit ExitCode.failuresFound
 
-def commandGroups : List CommandGroup := [
-  { name := "Core"
-    commands := [verifyCommand, transformCommand, checkCommand, toIonCommand, printCommand, diffCommand]
-    commonFlags := [includeFlag] },
-  { name := "Python"
-    commands := [StrataPython.Cli.pyAnalyzeLaurelCommand,
-                 StrataPython.Cli.pyResolveOverloadsCommand,
-                 StrataPython.Cli.pySpecsCommand,
-                 StrataPython.Cli.pySpecToLaurelCommand,
-                 StrataPython.Cli.pyAnalyzeLaurelToGotoCommand,
-                 StrataPython.Cli.pyAnalyzeToGotoCommand,
-                 StrataPython.Cli.pyTranslateLaurelCommand,
-                 StrataPython.Cli.pyInterpretCommand] },
-  { name := "Laurel"
-    commands := [laurelAnalyzeCommand, laurelAnalyzeBinaryCommand,
-                 laurelInterpretCommand, laurelInterpretBinaryCommand,
-                 laurelAnalyzeToGotoCommand, laurelParseCommand,
-                 laurelPrintCommand, laurelToCoreCommand] },
-]
+/-- A named solver backend: the `--solver` value it answers to and the discharge
+    factory that handles verification queries for that solver. -/
+structure SolverBackend where
+  name : String
+  mkDischarge : Core.MkDischargeFn
 
-def commandList : List Command :=
-  commandGroups.foldl (init := []) fun acc g => acc ++ g.commands
+/-- Build one discharge factory that picks a backend by the `--solver` value,
+    falling back to the default process solver when none matches. -/
+private def dispatchDischarge (backends : List SolverBackend) : Core.MkDischargeFn :=
+  fun options counter tempDir vars md label termCache ctx =>
+    match backends.find? (·.name == options.solver) with
+    | some b => b.mkDischarge options counter tempDir vars md label termCache ctx
+    | none   => Core.mkDischargeFn options counter tempDir vars md label termCache ctx
 
-def commandMap : Std.HashMap String Command :=
-  commandList.foldl (init := {}) fun m c => m.insert c.name c
+/-- Build the command groups, wiring the solver-aware commands to dispatch over
+    the given backends. -/
+def buildCommandGroups (backends : List SolverBackend := []) : List CommandGroup :=
+  let mkDischarge := dispatchDischarge backends
+  [ { name := "Core"
+      commands := [verifyCommand mkDischarge, transformCommand, checkCommand, toIonCommand, printCommand, diffCommand]
+      commonFlags := [includeFlag] },
+    { name := "Python"
+      commands := [StrataPython.Cli.pyAnalyzeLaurelCommand mkDischarge,
+                   StrataPython.Cli.pyResolveOverloadsCommand,
+                   StrataPython.Cli.pySpecsCommand,
+                   StrataPython.Cli.pySpecToLaurelCommand,
+                   StrataPython.Cli.pyAnalyzeLaurelToGotoCommand,
+                   StrataPython.Cli.pyAnalyzeToGotoCommand,
+                   StrataPython.Cli.pyTranslateLaurelCommand,
+                   StrataPython.Cli.pyInterpretCommand] },
+    { name := "Laurel"
+      commands := [laurelAnalyzeCommand, laurelAnalyzeBinaryCommand,
+                   laurelInterpretCommand, laurelInterpretBinaryCommand,
+                   laurelAnalyzeToGotoCommand, laurelParseCommand,
+                   laurelPrintCommand, laurelToCoreCommand] },
+  ]
+
+def buildCommandList (backends : List SolverBackend := []) : List Command :=
+  (buildCommandGroups backends).foldl (init := []) fun acc g => acc ++ g.commands
+
+def buildCommandMap (backends : List SolverBackend := []) : Std.HashMap String Command :=
+  (buildCommandList backends).foldl (init := {}) fun m c => m.insert c.name c
+
+-- The command names StrataCLI itself owns (the Core and Laurel groups), sorted.
+-- The Python group's commands live in the external `StrataPython.Cli` package, so
+-- its names are counted rather than pinned here — pinning them couples this build
+-- to routine frontend renames.
+private def expectedOwnedCommandNames : List String :=
+  ["check", "diff",
+   "laurelAnalyze", "laurelAnalyzeBinary", "laurelAnalyzeToGoto",
+   "laurelInterpret", "laurelInterpretBinary", "laurelParse",
+   "laurelPrint", "laurelToCore", "print",
+   "toIon", "transform", "verify"]
+
+private def expectedPythonGroupSize : Nat := 8
+
+-- Names of the commands StrataCLI owns (everything outside the Python group).
+private def ownedCommandNames (backends : List SolverBackend := []) : List String :=
+  ((buildCommandGroups backends).filter (·.name != "Python")).foldl
+    (init := []) (fun acc g => acc ++ g.commands.map (·.name))
+    |>.mergeSort (· < ·)
+
+-- A throwaway backend (reuses the default discharge factory) so the guards below
+-- can exercise a non-empty registry without needing an external solver to build.
+private def incrementalBackend : SolverBackend where
+  name := "incremental"
+  mkDischarge := fun options counter tempDir vars md label termCache ctx =>
+    Core.mkDischargeFn { options with incremental := true }
+      counter tempDir vars md label termCache ctx
+
+-- StrataCLI's owned commands are exactly this set; the external Python group
+-- contributes a fixed count; the map and list agree on size (no duplicate names).
+#guard ownedCommandNames [] == expectedOwnedCommandNames
+#guard (((buildCommandGroups []).find? (·.name == "Python")).map (·.commands.length)).getD 0 == expectedPythonGroupSize
+#guard (buildCommandList []).length == expectedOwnedCommandNames.length + expectedPythonGroupSize
+#guard (buildCommandMap []).size == (buildCommandList []).length
+
+-- Adding a backend does not change the exposed command set.
+#guard (buildCommandMap [incrementalBackend]).size == (buildCommandMap []).size
+#guard ownedCommandNames [incrementalBackend] == expectedOwnedCommandNames
+
+def commandGroups : List CommandGroup := buildCommandGroups []
+def commandList : List Command := buildCommandList []
+def commandMap : Std.HashMap String Command := buildCommandMap []
