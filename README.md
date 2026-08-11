@@ -52,6 +52,7 @@ lake exe strata <command> --help
 | `laurelAnalyzeBinary` | Verify Laurel Ion programs from stdin |
 | `laurelAnalyzeToGoto <file>` | Translate Laurel to GOTO JSON |
 | `laurelInterpret <file>` | Concretely interpret a Laurel Ion program |
+| `laurelInterpretBinary` | Concretely interpret Laurel Ion programs from stdin |
 | `laurelParse <file>` | Parse a Laurel source file (no verification) |
 | `laurelPrint` | Read Laurel Ion from stdin, print concrete syntax |
 | `laurelToCore <file>` | Translate Laurel to Core, print to stdout |
@@ -60,7 +61,7 @@ lake exe strata <command> --help
 
 | Command | Description |
 |---------|-------------|
-| `javaGen <dialect> <package> <output-dir>` | Generate Java source files to represent the language defined by a DDM dialect |
+| `lake exe laurelJavaGen <package> <output-dir>` | Generate Java source files for Laurel AST types (standalone Lake executable) |
 
 ## Common Flags
 
@@ -81,6 +82,13 @@ Most verification commands accept:
 | `--parallel <N>` | Number of parallel solver workers |
 | `--include <path>` | Add a dialect search path |
 
+The interpret commands are the exception: `laurelInterpret` and `laurelInterpretBinary`
+execute the program concretely and never invoke a solver, so they accept only
+`--fuel`, `--entry`, and the Laurel *translate* flags. Passing a solver-oriented
+flag from the table above (`--solver`, `--check-mode`, `--sarif`, …) is rejected as
+an unknown option rather than silently ignored. Note that `laurelAnalyze` still
+accepts the full set, so flag lists cannot be shared verbatim across the two.
+
 ## Exit Codes
 
 | Code | Category | Meaning |
@@ -93,9 +101,13 @@ Most verification commands accept:
 
 Codes 1-2 are user-actionable (fix the input or the code under analysis). Codes 3-4 are tool-side (report as a bug or wait for support).
 
-### Exception: `laurelInterpret`
+### Exception: `laurelInterpret` / `laurelInterpretBinary`
 
-`laurelInterpret` intentionally exits 0 even when assertions fail (mirroring `laurelAnalyzeBinary` for Java Front-End diagnostic parsing). Assertion failures are reported as stdout diagnostics under the `==== DIAGNOSTICS ====` sentinel. Callers must parse stdout for `==== DIAGNOSTICS ====` / `assertion does not hold` lines rather than relying on a non-zero exit code to detect violations. Exit codes 1/3/4 still apply for user errors, internal errors, and known limitations; exit 2 is used only for `OutOfFuel` and other opaque runtime errors with no associated source diagnostic.
+`laurelInterpret` and `laurelInterpretBinary` intentionally exit 0 even when assertions fail (mirroring `laurelAnalyzeBinary` for Java Front-End diagnostic parsing). Assertion failures are reported as stdout diagnostics under the `==== DIAGNOSTICS ====` sentinel. Callers must parse stdout for `==== DIAGNOSTICS ====` and the `<path>:<start>-<stop>: <message>` lines that follow it, rather than relying on a non-zero exit code to detect violations. Exit codes 1/3/4 still apply for user errors, internal errors, and known limitations; exit 2 is used only for `OutOfFuel` and other opaque runtime errors with no associated source diagnostic.
+
+The message carries the failing property's kind, matching `laurelAnalyzeBinary`: `assertion does not hold` for a source `assert`, and `precondition does not hold` / `postcondition does not hold` for a contract obligation the translator inserted. Treat the message as opaque text keyed off the line shape — do not match on `assertion does not hold` alone, which misses every contract violation.
+
+Because Laurel's `assume` is verification scaffolding with no runtime meaning, the interpreter skips assumes rather than halting on them. A *free* (assume-only) contract condition therefore produces no interpret diagnostic and no non-zero exit, even where the verifier would report it: `free requires false` on a callee emits no call-site check, so a run whose only obligation was that condition exits 0 with an empty diagnostics section.
 
 ## File Structure
 
