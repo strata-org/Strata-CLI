@@ -18,7 +18,19 @@
 
 failed=0
 TOP_DIR=$(pwd)
-EXAMPLES_DIR=${TOP_DIR}/.lake/packages/Strata/Examples
+
+# Accept examples directory as argument, or fall back to .lake/packages path.
+if [[ -n "${1:-}" ]]; then
+  EXAMPLES_DIR="$1"
+else
+  EXAMPLES_DIR="${TOP_DIR}/.lake/packages/Strata/Examples"
+fi
+
+if [[ ! -d "$EXAMPLES_DIR" ]]; then
+  echo "ERROR: Examples directory not found at $EXAMPLES_DIR"
+  echo "Usage: run_examples.sh [examples-dir]"
+  exit 1
+fi
 
 cd ${EXAMPLES_DIR}
 # ── Verify tests ────────────────────────────────────────────────────
@@ -47,6 +59,26 @@ for test_file in *.st; do
         fi
     fi
 done
+
+# ── keep-all-files test ─────────────────────────────────────────────
+# `strata verify --keep-all-files <dir>` must emit the intermediate Core phase
+# programs *inside* <dir>, named <baseName>.<n>.<phase>.core.st. Use --check so
+# the test exercises only the transform pipeline (no SMT solver needed).
+kaf_src="SimpleProc.core.st"
+if [ -f "$kaf_src" ]; then
+    kaf_dir=$(mktemp -d)
+    ${TOP_DIR}/.lake/build/bin/strata verify --check --keep-all-files "$kaf_dir" "$kaf_src" > /dev/null 2>&1
+    if ls "$kaf_dir"/SimpleProc.*.core.st > /dev/null 2>&1; then
+        echo "Test passed: verify --keep-all-files $kaf_src"
+    else
+        echo "ERROR: --keep-all-files did not emit intermediate files inside the directory"
+        ls -la "$kaf_dir"
+        failed=1
+    fi
+    rm -rf "$kaf_dir"
+else
+    echo "WARNING: keep-all-files test skipped, $kaf_src not found"
+fi
 
 # ── Transform tests ─────────────────────────────────────────────────
 # Transform test files live in expected/ as <base>.<pass1>.<pass2>.core.st.

@@ -43,7 +43,7 @@ StrataCLI is the command-line frontend for Strata. It builds the `strata` execut
 
 ### Adding Flags
 
-- Reuse `verifyOptionsFlags` or `laurelVerifyOptionsFlags` for verification commands.
+- Reuse `verifyOptionsFlags` for verification commands.
 - Reuse `includeFlag` for commands that load dialect files.
 - For new flags, add a `Flag` to the command's `flags` list.
 - Access flag values via `pflags.getBool "name"`, `pflags.getString "name"`, or `pflags.getRepeated "name"`.
