@@ -474,8 +474,21 @@ def laurelToCoreCommand : Command where
       | none => return
       | some coreProgram => IO.println (prettyPrintCore coreProgram)
 
-private def validPasses :=
-  "inlineProcedures, insertLoopInvariantAsserts, loopElim, callElim, filterProcedures, removeIrrelevantAxioms"
+/-! Canonical phase names (`AbstractedPhase.name`) for the passes supported
+    by the `transform` command. The CLI's help text and pass dispatch use
+    these instead of string literals, so they cannot drift from the
+    registry in `Strata.Languages.Core`. -/
+
+private def inlineProceduresPass : String := Strata.Core.passInlineAll.phase.name
+private def insertLoopInvariantAssertsPass : String := Strata.Core.passInsertLoopInvariantAsserts.phase.name
+private def loopElimPass : String := Strata.Core.passLoopElim.phase.name
+private def callElimPass : String := Strata.Core.passCallElim.phase.name
+private def filterProceduresPass : String := (Strata.Core.passFilterProcedures []).phase.name
+private def removeIrrelevantAxiomsPass : String := (Strata.Core.passRemoveIrrelevantAxioms []).phase.name
+
+private def validPasses : String := String.intercalate ", " [
+  inlineProceduresPass, insertLoopInvariantAssertsPass, loopElimPass,
+  callElimPass, filterProceduresPass, removeIrrelevantAxiomsPass]
 
 /-- A single transform pass together with the `--procedures`/`--functions`
     that were specified immediately after it on the command line. -/
@@ -515,12 +528,12 @@ def transformCommand : Command where
                --procedures and --functions after a --pass apply to that pass.",
       takesArg := .repeat "name" },
     { name := "procedures",
-      help := "Comma-separated procedure names for the preceding --pass. \
-               For filterProcedures: procedures to keep. \
-               For inlineProcedures: procedures to inline.",
+      help := s!"Comma-separated procedure names for the preceding --pass. \
+               For {filterProceduresPass}: procedures to keep. \
+               For {inlineProceduresPass}: procedures to inline.",
       takesArg := .repeat "procs" },
     { name := "functions",
-      help := "Comma-separated function names for the preceding --pass (used by removeIrrelevantAxioms).",
+      help := s!"Comma-separated function names for the preceding --pass (used by {removeIrrelevantAxiomsPass}).",
       takesArg := .repeat "funcs" }]
   help := "Apply one or more transforms to a Core program and print the result."
   callback := fun v pflags => do
@@ -535,31 +548,30 @@ def transformCommand : Command where
     | .error msg =>
       exitFailure msg
     | .ok initProgram =>
-      -- Validate and convert pass configs to TransformPass values
+      -- Validate and convert pass configs to TransformPass values.
       let mut passes : List Core.PipelinePhase := []
       for pc in passConfigs do
-        match pc.name with
-        | "inlineProcedures" =>
+        if pc.name == inlineProceduresPass then
           if pc.procedures.isEmpty then
             passes := passes ++ [Strata.Core.passInlineAll]
           else
             passes := passes ++ [Strata.Core.passInlineMatching pc.procedures]
-        | "insertLoopInvariantAsserts" =>
+        else if pc.name == insertLoopInvariantAssertsPass then
           passes := passes ++ [Strata.Core.passInsertLoopInvariantAsserts]
-        | "loopElim" =>
+        else if pc.name == loopElimPass then
           passes := passes ++ [Strata.Core.passLoopElim]
-        | "callElim" =>
+        else if pc.name == callElimPass then
           passes := passes ++ [Strata.Core.passCallElim]
-        | "filterProcedures" =>
+        else if pc.name == filterProceduresPass then
           if pc.procedures.isEmpty then
-            exitFailure "filterProcedures requires --procedures"
+            exitFailure s!"{filterProceduresPass} requires --procedures"
           passes := passes ++ [Strata.Core.passFilterProcedures pc.procedures]
-        | "removeIrrelevantAxioms" =>
+        else if pc.name == removeIrrelevantAxiomsPass then
           if pc.functions.isEmpty then
-            exitFailure "removeIrrelevantAxioms requires --functions"
+            exitFailure s!"{removeIrrelevantAxiomsPass} requires --functions"
           passes := passes ++ [Strata.Core.passRemoveIrrelevantAxioms pc.functions]
-        | other =>
-          exitFailure s!"Unknown pass '{other}'. Valid passes: {validPasses}."
+        else
+          exitFailure s!"Unknown pass '{pc.name}'. Valid passes: {validPasses}."
       -- Run all passes in a single CoreTransformM chain so fresh variable
       -- counters accumulate and cached analyses are reused across passes.
       match ← (Strata.Core.runTransforms initProgram passes).toBaseIO with
