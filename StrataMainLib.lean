@@ -18,6 +18,7 @@ import Strata.Languages.Laurel.LaurelCompilationPipeline
 import Strata.Languages.C_Simp.DDMTransform.Parse
 import Strata.Languages.Laurel.Grammar.AbstractToConcreteTreeTranslator
 import Strata.Languages.Laurel
+import Strata.Languages.Laurel.CliOptions
 import Strata.Languages.Core.EntryPoint
 import Strata.Transform.ProcedureInlining
 import StrataDDM.Util.IO
