@@ -701,10 +701,10 @@ structure SolverBackend where
 /-- Build one discharge factory that picks a backend by the `--solver` value,
     falling back to the default process solver when none matches. -/
 private def dispatchDischarge (backends : List SolverBackend) : Core.MkDischargeFn :=
-  fun options counter tempDir vars md label termCache ctx =>
+  fun options counter tempDir vars md label termCache captured ctx =>
     match backends.find? (·.name == options.solver) with
-    | some b => b.mkDischarge options counter tempDir vars md label termCache ctx
-    | none   => Core.mkDischargeFn options counter tempDir vars md label termCache ctx
+    | some b => b.mkDischarge options counter tempDir vars md label termCache captured ctx
+    | none   => Core.mkDischargeFn options counter tempDir vars md label termCache captured ctx
 
 /-- Build the command groups, wiring the solver-aware commands to dispatch over
     the given backends. -/
@@ -758,9 +758,9 @@ private def ownedCommandNames (backends : List SolverBackend := []) : List Strin
 -- can exercise a non-empty registry without needing an external solver to build.
 private def incrementalBackend : SolverBackend where
   name := "incremental"
-  mkDischarge := fun options counter tempDir vars md label termCache ctx =>
+  mkDischarge := fun options counter tempDir vars md label termCache captured ctx =>
     Core.mkDischargeFn { options with incremental := true }
-      counter tempDir vars md label termCache ctx
+      counter tempDir vars md label termCache captured ctx
 
 -- StrataCLI's owned commands are exactly this set; the external Python group
 -- contributes a fixed count; the map and list agree on size (no duplicate names).
