@@ -579,10 +579,12 @@ def transformCommand : Command where
       | .ok (program, _) => IO.print (Core.formatProgram program)
       | .error e => exitFailure s!"Transform failed: {e}"
 
-def verifyCommand (mkDischarge : Core.MkDischargeFn := Core.mkDischargeFn) : Command where
+def verifyCommand (mkDischargeOf : ParsedFlags → Core.MkDischargeFn := fun _ => Core.mkDischargeFn)
+    (extraFlags : List Flag := [])
+    (checkOptions : Core.VerifyOptions → ParsedFlags → List String := fun _ _ => []) : Command where
   name := "verify"
   args := [ "file" ]
-  flags := includeFlag :: verifyOptionsFlags ++ [
+  flags := includeFlag :: verifyOptionsFlags ++ extraFlags ++ [
     { name := "check", help := "Process up until SMT generation, but don't solve." },
     { name := "type-check", help := "Exit after semantic dialect's type inference/checking." },
     { name := "parse-only", help := "Exit after DDM parsing and type checking." },
@@ -591,6 +593,7 @@ def verifyCommand (mkDischarge : Core.MkDischargeFn := Core.mkDischargeFn) : Com
   help := "Verify a Strata program file (.core.st, .csimp.st, or .b3.st)."
   callback := fun v pflags => do
     let file := v[0]
+    let mkDischarge := mkDischargeOf pflags
     let proceduresToVerify := pflags.getString "procedures" |>.map (·.splitToList (· == ','))
     let opts ← parseVerifyOptions pflags { VerifyOptions.default with verbose := .quiet }
       (inputFile := some file)
@@ -599,6 +602,9 @@ def verifyCommand (mkDischarge : Core.MkDischargeFn := Core.mkDischargeFn) : Com
       typeCheckOnly := pflags.getBool "type-check",
       parseOnly := pflags.getBool "parse-only",
       outputSarif := opts.outputSarif || pflags.getString "output-format" == some "sarif" }
+    let optionIssues := checkOptions opts pflags
+    unless optionIssues.isEmpty do
+      exitUserError (String.intercalate "\n" optionIssues)
     -- `--keep-all-files` has no effect for B3 files: the B3 pipeline runs no
     -- Core transform phases, so there are no intermediate programs to emit.
     -- Reject it up front — before the parse-only / type-check-only early
@@ -697,22 +703,43 @@ def verifyCommand (mkDischarge : Core.MkDischargeFn := Core.mkDischargeFn) : Com
     factory that handles verification queries for that solver. -/
 structure SolverBackend where
   name : String
-  mkDischarge : Core.MkDischargeFn
+  /-- Extra `verify` flags this backend accepts. They are added to the command's flag
+      list, so they appear in `--help` and parse like the built-in flags. -/
+  extraFlags : List Flag := []
+  /-- Returns one message per option this backend cannot apply in the given invocation
+      (empty means every option is fine). -/
+  checkOptions : Core.VerifyOptions → ParsedFlags → List String := fun _ _ => []
+  mkDischarge : ParsedFlags → Core.MkDischargeFn
 
 /-- Build one discharge factory that picks a backend by the `--solver` value,
     falling back to the default process solver when none matches. -/
-private def dispatchDischarge (backends : List SolverBackend) : Core.MkDischargeFn :=
+private def dispatchDischarge (backends : List SolverBackend) (pflags : ParsedFlags) : Core.MkDischargeFn :=
   fun options counter tempDir vars md label termCache captured ctx =>
     match backends.find? (·.name == options.solver) with
-    | some b => b.mkDischarge options counter tempDir vars md label termCache captured ctx
+    | some b => b.mkDischarge pflags options counter tempDir vars md label termCache captured ctx
     | none   => Core.mkDischargeFn options counter tempDir vars md label termCache captured ctx
+
+/-- A backend's `extraFlags` apply only when that backend is selected. Returns a
+    message for each such flag that is set under a different `--solver`. -/
+private def foreignBackendFlagIssues (backends : List SolverBackend) (solver : String)
+    (pflags : ParsedFlags) : List String :=
+  backends.flatMap fun b =>
+    if b.name == solver then []
+    else b.extraFlags.filterMap fun f =>
+      if pflags.getBool f.name then some s!"--{f.name} only applies to --solver {b.name}" else none
 
 /-- Build the command groups, wiring the solver-aware commands to dispatch over
     the given backends. -/
 def buildCommandGroups (backends : List SolverBackend := []) : List CommandGroup :=
-  let mkDischarge := dispatchDischarge backends
+  let extraFlags := backends.flatMap (·.extraFlags)
+  let mkDischargeOf := dispatchDischarge backends
+  let checkOptions := fun (opts : Core.VerifyOptions) (pflags : ParsedFlags) =>
+    foreignBackendFlagIssues backends opts.solver pflags ++
+      ((backends.find? (·.name == opts.solver)).map (·.checkOptions opts pflags) |>.getD [])
+  -- Commands that don't parse backend-specific flags use the empty-flag dispatch.
+  let mkDischarge := mkDischargeOf {}
   [ { name := "Core"
-      commands := [verifyCommand mkDischarge, transformCommand, checkCommand, toIonCommand, printCommand, diffCommand]
+      commands := [verifyCommand mkDischargeOf extraFlags checkOptions, transformCommand, checkCommand, toIonCommand, printCommand, diffCommand]
       commonFlags := [includeFlag] },
     { name := "Python"
       commands := [StrataPython.Cli.pyAnalyzeLaurelCommand mkDischarge,
@@ -759,7 +786,7 @@ private def ownedCommandNames (backends : List SolverBackend := []) : List Strin
 -- can exercise a non-empty registry without needing an external solver to build.
 private def incrementalBackend : SolverBackend where
   name := "incremental"
-  mkDischarge := fun options counter tempDir vars md label termCache captured ctx =>
+  mkDischarge := fun _pflags options counter tempDir vars md label termCache captured ctx =>
     Core.mkDischargeFn { options with incremental := true }
       counter tempDir vars md label termCache captured ctx
 
@@ -773,6 +800,17 @@ private def incrementalBackend : SolverBackend where
 -- Adding a backend does not change the exposed command set.
 #guard (buildCommandMap [incrementalBackend]).size == (buildCommandMap []).size
 #guard ownedCommandNames [incrementalBackend] == expectedOwnedCommandNames
+
+-- A test-only backend with one extra flag, to exercise `foreignBackendFlagIssues`.
+private def flagTestBackend : SolverBackend where
+  name := "tb"
+  extraFlags := [{ name := "tb-opt", help := "", takesArg := .arg "v" }]
+  mkDischarge := fun _ => Core.mkDischargeFn
+
+-- A backend flag set under a different `--solver` is rejected; under its own backend, allowed.
+#guard foreignBackendFlagIssues [flagTestBackend] "other" (({} : ParsedFlags).insert "tb-opt" (some "x"))
+  == ["--tb-opt only applies to --solver tb"]
+#guard foreignBackendFlagIssues [flagTestBackend] "tb" (({} : ParsedFlags).insert "tb-opt" (some "x")) == []
 
 def commandGroups : List CommandGroup := buildCommandGroups []
 def commandList : List Command := buildCommandList []
