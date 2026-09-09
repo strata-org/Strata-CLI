@@ -601,6 +601,7 @@ def verifyCommand (mkDischargeOf : ParsedFlags → Core.MkDischargeFn := fun _ =
       checkOnly := pflags.getBool "check",
       typeCheckOnly := pflags.getBool "type-check",
       parseOnly := pflags.getBool "parse-only",
+      proceduresToVerify := proceduresToVerify,
       outputSarif := opts.outputSarif || pflags.getString "output-format" == some "sarif" }
     let optionIssues := checkOptions opts pflags
     unless optionIssues.isEmpty do
@@ -658,7 +659,7 @@ def verifyCommand (mkDischargeOf : ParsedFlags → Core.MkDischargeFn := fun _ =
           -- package that can depend on the StrataBoole package.
           throw <| IO.Error.userError "Boole dialect support requires the StrataBoole package"
         else
-          Strata.Core.verify pgm inputCtx proceduresToVerify opts
+          Strata.Core.verify pgm inputCtx opts
             (mkDischarge := mkDischarge) (pipelineCtx := pctx)
       catch e =>
         println! f!"{e}"
