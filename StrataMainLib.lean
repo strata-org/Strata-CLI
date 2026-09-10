@@ -14,11 +14,11 @@ import Strata.Languages.Core.SarifOutput
 import Strata.Pipeline.Context
 import Strata.Languages.C_Simp.Verify
 import Strata.Languages.B3.Verifier.Program
-import Strata.Languages.Laurel.LaurelCompilationPipeline
+import StrataLaurel.Implementation.LaurelCompilationPipeline
 import Strata.Languages.C_Simp.DDMTransform.Parse
-import Strata.Languages.Laurel.Grammar.AbstractToConcreteTreeTranslator
-import Strata.Languages.Laurel
-import Strata.Languages.Laurel.CliOptions
+import StrataLaurel.Implementation.Grammar.AbstractToConcreteTreeTranslator
+import StrataLaurel.Implementation
+import StrataLaurel.Implementation.CliOptions
 import Strata.Languages.Core.EntryPoint
 import Strata.Transform.ProcedureInlining
 import StrataDDM.Util.IO

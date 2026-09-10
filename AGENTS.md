@@ -80,7 +80,7 @@ Key imports in `StrataMainLib.lean`:
 - `Strata.Languages.Core.SarifOutput` - SARIF report generation
 - `Strata.Languages.C_Simp.Verify` - C_Simp verification
 - `Strata.Languages.B3.Verifier.Program` - B3 verification
-- `Strata.Languages.Laurel.LaurelCompilationPipeline` - Laurel compilation
+- `StrataLaurel.Implementation.LaurelCompilationPipeline` - Laurel compilation
 - `Strata.Pipeline.PyAnalyzeLaurel` - Python-to-Laurel pipeline
 - `Strata.Backends.CBMC.GOTO.CoreToGOTOPipeline` - GOTO translation
 - `Strata.Transform.ProcedureInlining` - Transform passes
