@@ -499,6 +499,45 @@ private structure PassConfig where
   functions : List String := []
 deriving Inhabited
 
+/-- The pipeline `verify` runs (`none` = the default order) together with any notes to print
+    before verification.
+
+    A resolver sets `notes` to report a difference between the pipeline it returned and the one
+    the caller asked for, such as the checks added for what a registered pipeline assumes of its
+    input. -/
+structure PipelineChoice where
+  pipeline : Option (Core.ValidatedPipeline Core.ProgramFactSet.empty) := none
+  notes : List String := []
+
+/-- A binary's answer to which pipeline `verify` runs: the flags it accepts for choosing one,
+    the phases it admits, and the resolution from the one to the other. The default value
+    accepts `--phases` and admits every phase Core defines. A binary keeping a registry of
+    pipelines supplies a value that refuses a list it does not know and carries flags of its
+    own, such as `--pipeline`. -/
+structure PipelineResolver where
+  /-- Extra `verify` flags this resolver accepts, added to the command's flag list so they
+      appear in `--help` and parse like the built-in ones. -/
+  extraFlags : List Flag := []
+  /-- The pipeline to run, with whatever the run has to report about it, or a message to exit
+      with. -/
+  resolve : ParsedFlags → Core.VerifyOptions → Except String PipelineChoice :=
+    fun pflags options =>
+      match pflags.getString "phases" with
+      | none => .ok {}
+      | some names => do
+        let phases ← Strata.Core.resolvePhases (Strata.Core.nameablePhases options)
+          (names.splitToList (· == ','))
+          (hint := "Use --display-phases to see the available phases.")
+        let vp ← Strata.Core.validatePipeline phases
+        pure { pipeline := some vp }
+  /-- Every phase this resolver accepts a name for. `--display-phases` lists these, so a
+      resolver overriding `resolve` states here what it will accept, or its help text and
+      what it takes would drift apart. -/
+  nameable : List Core.PipelinePhase := Strata.Core.nameablePhases
+  /-- What this binary calls the flags that select and explain phases. -/
+  flagNames : Core.PhaseFlagNames :=
+    { select := "--phases", displayContracts := "--display-phase-contracts" }
+
 /-- Walk the ordered flag entries and bind each `--procedures`/`--functions`
     to the most recent `--pass`. -/
 private def buildPassConfigs (entries : Array (String × Option String))
@@ -579,18 +618,72 @@ def transformCommand : Command where
       | .ok (program, _) => IO.print (Core.formatProgram program)
       | .error e => exitFailure s!"Transform failed: {e}"
 
+/-- A rejected `--phases` list gets a pointer to the contract table, which is where the
+    reason lives: the table shows, per phase, which requirement went unmet. An unknown phase
+    name is a different problem and already carries its own hint, so it is left alone, and a
+    command that offers no contracts flag adds nothing. -/
+private def withContractsHint (resolver : PipelineResolver) (pflags : ParsedFlags)
+    (msg : String) : String :=
+  let flag := resolver.flagNames.displayContracts
+  if (pflags.getString "phases").isSome && !flag.isEmpty
+      && !msg.startsWith "Unknown phase name" then
+    msg ++ s!"\n\nTo see where each phase's requirements are met across this order, run {flag}."
+  else msg
+
 def verifyCommand (mkDischargeOf : ParsedFlags → Core.MkDischargeFn := fun _ => Core.mkDischargeFn)
     (extraFlags : List Flag := [])
-    (checkOptions : Core.VerifyOptions → ParsedFlags → List String := fun _ _ => []) : Command where
+    (checkOptions : Core.VerifyOptions → ParsedFlags → List String := fun _ _ => [])
+    (resolver : PipelineResolver := {}) : Command where
   name := "verify"
   args := [ "file" ]
-  flags := includeFlag :: verifyOptionsFlags ++ extraFlags ++ [
+  flags := includeFlag :: verifyOptionsFlags ++ extraFlags ++ resolver.extraFlags ++ [
+    { name := "phases", help := "Run these phases, in this order (comma-separated). \
+        Without a file, report whether they compose.", takesArg := .arg "names" },
+    { name := "display-phases", help := "Print the phases available and the default order." },
+    { name := "display-phase-contracts",
+      help := "Print what each phase requires, delivers and preserves." },
     { name := "check", help := "Process up until SMT generation, but don't solve." },
     { name := "type-check", help := "Exit after semantic dialect's type inference/checking." },
     { name := "parse-only", help := "Exit after DDM parsing and type checking." },
     { name := "output-format", help := "Output format (only 'sarif' supported).", takesArg := .arg "format" },
     { name := "procedures", help := "Verify only the specified procedures (comma-separated).", takesArg := .arg "procs" }]
   help := "Verify a Strata program file (.core.st, .csimp.st, or .b3.st)."
+  -- Both answer without a file to verify: one lists the phases, the other checks an order.
+  reportFlags :=
+    [("display-phases", fun _ =>
+        -- The extras are whatever the resolver accepts beyond the default order, so the
+        -- text cannot advertise less than `--phases` takes.
+        let dflt := Strata.Core.corePipelinePhases
+        let extras := resolver.nameable.filter fun p =>
+          !dflt.any fun d => Strata.Core.phaseName d == Strata.Core.phaseName p
+        IO.println (Strata.Core.displayPhasesText resolver.flagNames dflt (extras := extras))),
+     -- Tables the order asked for, so `#` marks a requirement that order leaves unmet; with no
+     -- `--phases` it tables the default order, which is the one a caller is comparing against.
+     ("display-phase-contracts", fun pflags => do
+        let options ← parseVerifyOptions pflags { VerifyOptions.default with verbose := .quiet }
+        let phases ← match pflags.getString "phases" with
+          | none => pure (Strata.Core.corePipelinePhases options)
+          | some names =>
+            match Strata.Core.resolvePhases (Strata.Core.nameablePhases options)
+                    (names.splitToList (· == ','))
+                    (hint := "Use --display-phases to see the available phases.") with
+            | .ok phases => pure phases
+            | .error msg => exitUserError msg
+        IO.println (Strata.Core.displayPhaseContractsText phases)),
+     ("phases", fun pflags => do
+        -- The same options the run would use, since a resolver may compare a list against
+        -- the default order for the options in effect: reporting under different ones could
+        -- accept a list the run then refuses.
+        let opts ← parseVerifyOptions pflags { VerifyOptions.default with verbose := .quiet }
+        match resolver.resolve pflags opts with
+        | .ok choice =>
+          choice.notes.forM IO.println
+          match choice.pipeline with
+          | none => IO.println "This is the default order."
+          | some vp =>
+            let names := ", ".intercalate (vp.phases.map Strata.Core.phaseName)
+            IO.println s!"This order composes: {names}"
+        | .error msg => exitUserError (withContractsHint resolver pflags msg))]
   callback := fun v pflags => do
     let file := v[0]
     let mkDischarge := mkDischargeOf pflags
@@ -606,6 +699,29 @@ def verifyCommand (mkDischargeOf : ParsedFlags → Core.MkDischargeFn := fun _ =
     let optionIssues := checkOptions opts pflags
     unless optionIssues.isEmpty do
       exitUserError (String.intercalate "\n" optionIssues)
+    let choice ← match resolver.resolve pflags opts with
+      | .ok c => pure c
+      | .error msg => exitUserError (withContractsHint resolver pflags msg)
+    let pipeline := choice.pipeline
+    -- `--procedures` narrows verification by splicing `filterProcedures`, which only the
+    -- default pipeline does. A caller-supplied pipeline is run exactly as given, so the
+    -- filter would be silently dropped and the run would report procedures the caller did
+    -- not ask about. Refuse the combination rather than mislead.
+    if pipeline.isSome && proceduresToVerify.isSome then
+      exitUserError <|
+        s!"--procedures cannot be combined with {resolver.flagNames.select} or a named "
+          ++ "pipeline: the supplied pipeline is run exactly as given, so the procedure "
+          ++ "filter would be silently dropped. Omit --procedures, or run the default "
+          ++ "pipeline, which applies it."
+    -- Only the Core path takes a pipeline: a C_Simp program is verified through its own
+    -- translation and a B3 program never reaches the Core phases at all. Accepting a phase
+    -- list for either would run something other than what the caller asked for.
+    if pipeline.isSome
+        && (file.endsWith ".csimp.st" || file.endsWith ".b3.st" || file.endsWith ".b3cst.st") then
+      exitUserError <|
+        s!"The selected pipeline applies to Core programs only, and {file} is not one."
+    -- Print notes only after the Core-only check above, so a rejected run prints nothing.
+    choice.notes.forM IO.println
     -- `--keep-all-files` has no effect for B3 files: the B3 pipeline runs no
     -- Core transform phases, so there are no intermediate programs to emit.
     -- Reject it up front — before the parse-only / type-check-only early
@@ -660,7 +776,7 @@ def verifyCommand (mkDischargeOf : ParsedFlags → Core.MkDischargeFn := fun _ =
           throw <| IO.Error.userError "Boole dialect support requires the StrataBoole package"
         else
           Strata.Core.verify pgm inputCtx opts
-            (mkDischarge := mkDischarge) (pipelineCtx := pctx)
+            (pipeline := pipeline) (mkDischarge := mkDischarge) (pipelineCtx := pctx)
       catch e =>
         println! f!"{e}"
         IO.Process.exit ExitCode.internalError
@@ -731,7 +847,8 @@ private def foreignBackendFlagIssues (backends : List SolverBackend) (solver : S
 
 /-- Build the command groups, wiring the solver-aware commands to dispatch over
     the given backends. -/
-def buildCommandGroups (backends : List SolverBackend := []) : List CommandGroup :=
+def buildCommandGroups (backends : List SolverBackend := [])
+    (resolver : PipelineResolver := {}) : List CommandGroup :=
   let extraFlags := backends.flatMap (·.extraFlags)
   let mkDischargeOf := dispatchDischarge backends
   let checkOptions := fun (opts : Core.VerifyOptions) (pflags : ParsedFlags) =>
@@ -740,7 +857,7 @@ def buildCommandGroups (backends : List SolverBackend := []) : List CommandGroup
   -- Commands that don't parse backend-specific flags use the empty-flag dispatch.
   let mkDischarge := mkDischargeOf {}
   [ { name := "Core"
-      commands := [verifyCommand mkDischargeOf extraFlags checkOptions, transformCommand, checkCommand, toIonCommand, printCommand, diffCommand]
+      commands := [verifyCommand mkDischargeOf extraFlags checkOptions resolver, transformCommand, checkCommand, toIonCommand, printCommand, diffCommand]
       commonFlags := [includeFlag] },
     { name := "Python"
       commands := [StrataPython.Cli.pyAnalyzeLaurelCommand mkDischarge,
@@ -758,11 +875,16 @@ def buildCommandGroups (backends : List SolverBackend := []) : List CommandGroup
                    laurelPrintCommand, laurelToCoreCommand] },
   ]
 
-def buildCommandList (backends : List SolverBackend := []) : List Command :=
-  (buildCommandGroups backends).foldl (init := []) fun acc g => acc ++ g.commands
+/-- The commands as a flat list. It threads the resolver through to `buildCommandGroups`, so
+    the `verify` command keeps its pipeline flags; a binary that builds its commands from this
+    list would otherwise have an ungated `--phases`. -/
+def buildCommandList (backends : List SolverBackend := [])
+    (resolver : PipelineResolver := {}) : List Command :=
+  (buildCommandGroups backends resolver).foldl (init := []) fun acc g => acc ++ g.commands
 
-def buildCommandMap (backends : List SolverBackend := []) : Std.HashMap String Command :=
-  (buildCommandList backends).foldl (init := {}) fun m c => m.insert c.name c
+def buildCommandMap (backends : List SolverBackend := [])
+    (resolver : PipelineResolver := {}) : Std.HashMap String Command :=
+  (buildCommandList backends resolver).foldl (init := {}) fun m c => m.insert c.name c
 
 -- The command names StrataCLI itself owns (the Core and Laurel groups), sorted.
 -- The Python group's commands live in the external `StrataPython.Cli` package, so
@@ -812,6 +934,22 @@ private def flagTestBackend : SolverBackend where
 #guard foreignBackendFlagIssues [flagTestBackend] "other" (({} : ParsedFlags).insert "tb-opt" (some "x"))
   == ["--tb-opt only applies to --solver tb"]
 #guard foreignBackendFlagIssues [flagTestBackend] "tb" (({} : ParsedFlags).insert "tb-opt" (some "x")) == []
+
+-- A test-only resolver carrying a flag of its own, which is the shape a binary with a
+-- registry of pipelines has.
+private def flagTestResolver : PipelineResolver where
+  extraFlags := [{ name := "pipeline", help := "", takesArg := .arg "name" }]
+
+-- Checks the resolver's flag reaches `verify` through both builders.
+private def verifyCommandFrom (map : Std.HashMap String Command) : Option Command := map["verify"]?
+
+private def offersPipelineFlag (cmd : Command) : Bool := cmd.flags.any (·.name == "pipeline")
+
+#guard ((buildCommandList [] flagTestResolver).find? (·.name == "verify")).map offersPipelineFlag
+  == some true
+#guard (verifyCommandFrom (buildCommandMap [] flagTestResolver)).map offersPipelineFlag
+  == some true
+#guard ((verifyCommandFrom (buildCommandMap [])).map offersPipelineFlag) == some false
 
 def commandGroups : List CommandGroup := buildCommandGroups []
 def commandList : List Command := buildCommandList []
