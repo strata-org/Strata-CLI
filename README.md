@@ -84,10 +84,22 @@ Most verification commands accept:
 
 The interpret commands are the exception: `laurelInterpret` and `laurelInterpretBinary`
 execute the program concretely and never invoke a solver, so they accept only
-`--fuel`, `--entry`, and the Laurel *translate* flags. Passing a solver-oriented
+`--fuel`, `--entry`, `--interpreter`, and the Laurel *translate* flags. Passing a solver-oriented
 flag from the table above (`--solver`, `--check-mode`, `--sarif`, …) is rejected as
 an unknown option rather than silently ignored. Note that `laurelAnalyze` still
 accepts the full set, so flag lists cannot be shared verbatim across the two.
+
+`--interpreter core` (the default) translates the program to Core and runs the Core
+interpreter. `--interpreter laurel` resolves the program against the prelude and runs the Laurel
+interpreter on it directly, with no translation to Core; it rejects `--keep-all-files`.
+Like the Core path it skips `assume`s and checks preconditions and postconditions (free
+conditions are not checked). A program the verify pipeline would reject (a resolution
+error, a not-yet-supported construct, or a source name starting with `$`) is an error.
+`--fuel` bounds the steps of each entry procedure (default 100000, a different unit from
+the Core interpreter's per-call fuel), so a divergent program, including plain unbounded
+recursion, ends out of fuel. An unsupported construct, an uncaught `throw` or running out of fuel ends
+that entry with exit 2; assertion failures recorded before an uncaught `throw` or
+out-of-fuel are still reported.
 
 ## Exit Codes
 

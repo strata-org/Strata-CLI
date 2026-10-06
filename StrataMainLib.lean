@@ -19,6 +19,7 @@ import Strata.Languages.C_Simp.DDMTransform.Parse
 import StrataLaurel.Implementation.Grammar.AbstractToConcreteTreeTranslator
 import StrataLaurel.Implementation
 import StrataLaurel.Implementation.CliOptions
+import StrataLaurel.Implementation.Interpreter
 import Strata.Languages.Core.EntryPoint
 import Strata.Transform.ProcedureInlining
 import StrataDDM.Util.IO
@@ -165,24 +166,27 @@ def laurelAnalyzeBinaryCommand : Command where
       IO.println s!"{Std.format diag.fileRange.file}:{diag.fileRange.range.start}-{diag.fileRange.range.stop}: {diag.message}"
 
 /-- Normalize a procedure name for `--entry` matching. JVerify lowers a static
-    method `pkg.Class.method` to a Core procedure named `pkg.Class?static_method`,
-    so we drop the `?static` marker and treat the user-facing `#` separator as `_`.
+    method `pkg.Class.method` to a procedure named `pkg.Class?static?method`,
+    so we drop the `?static` marker and treat the `?` and user-facing `#`
+    separators as `_`.
     This lets `--entry pkg.Class#method` resolve regardless of those details. -/
 private def normalizeEntryName (s : String) : String :=
-  (s.replace "?static" "").replace "#" "_"
+  ((s.replace "?static?" "?").replace "#" "_").replace "?" "_"
 
 /-- Resolve a `--entry` procedure by name: try an exact match first, then fall
     back to matching on the normalized name. Used only when `--entry` is given
     as an explicit override of the producer's entry-point metadata. -/
-private def resolveEntryByName (prog : Core.Program) (entry : String) : Option Core.Procedure :=
+private def resolveEntryByName (prog : Core.Program) (entry : String) : Except String Core.Procedure :=
   match Core.Program.Procedure.find? prog ⟨entry, ()⟩ with
-  | some p => some p
+  | some p => .ok p
   | none =>
     let target := normalizeEntryName entry
-    prog.decls.findSome? fun d =>
-      match d.getProc? with
-      | some p => if normalizeEntryName p.header.name.name == target then some p else none
-      | none => none
+    let candidates := prog.decls.filterMap fun d =>
+      d.getProc?.filter (normalizeEntryName ·.header.name.name == target)
+    match candidates with
+    | [p] => .ok p
+    | [] => .error s!"entry procedure '{entry}' not found"
+    | ps => .error s!"entry procedure '{entry}' is ambiguous: {ps.map (·.header.name.name)}"
 
 /-- Flags for the Laurel interpret commands: `--fuel`, `--entry`, and
     `--keep-all-files`. Shared by `laurelInterpret` (file input) and
@@ -198,7 +202,84 @@ private def laurelInterpretFlags : List Flag :=
      takesArg := .arg "proc" },
    { name := "keep-all-files",
      help := "Store intermediate programs in <dir>.",
-     takesArg := .arg "dir" }]
+     takesArg := .arg "dir" },
+   { name := "interpreter",
+     help := "Interpreter to execute with: `core` (default) translates to Core and runs \
+              the Core interpreter; `laurel` runs the Laurel interpreter directly on the \
+              resolved Laurel program, without translation to Core. `laurel` does \
+              not support --keep-all-files.",
+     takesArg := .arg "core|laurel" }]
+
+private def resolveLaurelEntryByName (prog : Laurel.Program) (entry : String)
+    : Except String Laurel.Procedure :=
+  match prog.staticProcedures.find? (·.name.text == entry) with
+  | some p => .ok p
+  | none =>
+    let target := normalizeEntryName entry
+    match prog.staticProcedures.filter (normalizeEntryName ·.name.text == target) with
+    | [p] => .ok p
+    | [] => .error s!"entry procedure '{entry}' not found"
+    | ps => .error s!"entry procedure '{entry}' is ambiguous: {ps.map (·.name.text)}"
+
+private def runLaurelInterpretDirect (ionBytes : ByteArray) (pflags : ParsedFlags)
+    : IO Unit := do
+  if (pflags.getString "keep-all-files").isSome then
+    exitFailure "--keep-all-files is not supported with --interpreter laurel"
+  let fuel ← match pflags.getString "fuel" with
+    | some s => match s.toNat? with
+      | .some 0 => exitFailure s!"Invalid fuel: '0' (must be > 0)"
+      | .some n => pure n
+      | .none => exitFailure s!"Invalid fuel: '{s}'"
+    | none => pure 100000
+  let parsed ← Strata.readLaurelIonProgram ionBytes
+  let dollarErrors := (Laurel.validateNoDollarNames parsed).filter (·.kind != .warning)
+  unless dollarErrors.isEmpty do
+    exitFailure s!"Laurel resolution failed: {dollarErrors.map (·.message)}"
+  let entries ← match pflags.getString "entry" with
+    | some name => match resolveLaurelEntryByName parsed name with
+      | .ok p => pure [p]
+      | .error msg => exitFailure msg
+    | none =>
+      match parsed.staticProcedures.filter (·.isInterpretEntry) with
+      | [] => exitFailure "no entry point found: mark a procedure with `entry` in the \
+                           Laurel source, or pass --entry <proc>"
+      | ps => pure ps
+  let translateOptions : LaurelTranslateOptions := {}
+  let resolved := Laurel.resolve
+    { parsed with
+      staticProcedures := Laurel.coreDefinitionsForLaurel.staticProcedures ++ parsed.staticProcedures,
+      types := Laurel.coreDefinitionsForLaurel.types ++ parsed.types }
+    (gradualTypes := translateOptions.gradualTypes)
+    (realizeCoercion := translateOptions.realizeCoercion) (toBool := translateOptions.toBool)
+    (reservedNames := translateOptions.reservedNames)
+  let rejected := resolved.errors.filter (·.kind != .warning)
+  unless rejected.isEmpty do
+    exitFailure s!"Laurel resolution failed: {rejected.map (·.message)}"
+  let mut failures : Array Strata.Message := #[]
+  let mut seen : Std.HashSet Strata.Message := {}
+  let mut errors : Array (String × String) := #[]
+  for p in entries do
+    try
+      let (_, fs, outcome) ← Laurel.Interpreter.evalProgramWithOutcome {}
+        { entryProcedure := p.name.text, dumpState := false, printAsserts := false, fuel }
+        resolved.program
+      for f in fs do
+        unless seen.contains f do
+          failures := failures.push f
+          seen := seen.insert f
+      match outcome with
+      | .completed => pure ()
+      | .escaped v => errors := errors.push (p.name.text, s!"uncaught throw of {v.display}")
+      | .outOfFuel => errors := errors.push (p.name.text, "out of fuel")
+    catch e =>
+      errors := errors.push (p.name.text, toString e)
+  IO.println s!"==== DIAGNOSTICS ===="
+  for diag in failures do
+    IO.println s!"{Std.format diag.fileRange.file}:{diag.fileRange.range.start}-{diag.fileRange.range.stop}: {diag.message}"
+  for (procName, e) in errors do
+    IO.eprintln s!"'{procName}': {e}"
+  unless errors.isEmpty do
+    exitFailuresFound s!"{errors.size} entry procedure(s) ended with an interpreter error"
 
 /-- Concretely execute a Laurel Ion program (already loaded as bytes) and print
     diagnostics. Shared implementation of `laurelInterpret` (file input) and
@@ -207,6 +288,10 @@ private def laurelInterpretFlags : List Flag :=
     which `keepAllFilesBaseName` maps to `program`). -/
 private def runLaurelInterpret (ionBytes : ByteArray) (pflags : ParsedFlags)
     (inputFile : Option String := none) : IO Unit := do
+  match pflags.getString "interpreter" with
+  | none | some "core" => pure ()
+  | some "laurel" => return ← runLaurelInterpretDirect ionBytes pflags
+  | some other => exitFailure s!"Invalid interpreter: '{other}' (expected 'core' or 'laurel')"
   let options ← parseLaurelVerifyOptions pflags (inputFile := inputFile)
   -- Reject `0` explicitly: `runEntry` would return `OutOfFuel` before executing
   -- anything, which surfaces as exit 2 (failures found) with an empty diagnostics
@@ -250,8 +335,8 @@ private def runLaurelInterpret (ionBytes : ByteArray) (pflags : ParsedFlags)
   -- producer's markers; otherwise run every procedure marked `entry`.
   let entries ← match entryOverride with
     | some name => match resolveEntryByName core name with
-      | some p => pure [p]
-      | none => exitFailure s!"entry procedure '{name}' not found"
+      | .ok p => pure [p]
+      | .error msg => exitFailure msg
     | none =>
       match Core.Program.entryProcedures core with
       | [] => exitFailure "no entry point found: mark a procedure with `entry` in the \
