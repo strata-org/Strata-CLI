@@ -11,7 +11,12 @@ StrataCLI is the command-line frontend for Strata. It builds the `strata` execut
 ### File Layout
 
 - `StrataMain.lean` - Minimal entry point. Calls `runCommandMap commandMap commandGroups args`. Do not add logic here.
-- `StrataMainLib.lean` - Contains everything else: command definitions, flag parsing infrastructure, exit code constants, and helper utilities. This is the file you will modify for almost all CLI changes.
+- `StrataMainLib.lean` - Builds the command groups from Strata's Core commands plus the Python and Laurel frontends (`CliFrontend`s). The commands themselves live in other packages:
+  - Strata `Strata/Cli/CoreCommands.lean` - `verify`, `transform`, the command builders, `SolverBackend`, `PipelineResolver`.
+  - Strata `Strata/Cli/DialectCommands.lean` - `check`, `toIon`, `print`, `diff`.
+  - Strata `StrataLaurel/Implementation/Cli.lean` - the Laurel commands and `laurelFrontend`.
+  - StrataPythonFrontEnd `StrataPython/Cli.lean` - the Python commands.
+  - Strata `Strata/Cli/Framework.lean` - flag parsing, exit codes, help output.
 
 ### Exit Codes (namespace `ExitCode`)
 
@@ -25,7 +30,7 @@ StrataCLI is the command-line frontend for Strata. It builds the `strata` execut
 
 ## How to Add a New Command
 
-1. Define a `Command` value in `StrataMainLib.lean`:
+1. Define a `Command` value in the package that owns it (see File Layout):
    ```lean
    def myNewCommand : Command where
      name := "myNew"
@@ -37,7 +42,7 @@ StrataCLI is the command-line frontend for Strata. It builds the `strata` execut
        -- implementation here
    ```
 
-2. Add it to the appropriate `CommandGroup` in `commandGroups`.
+2. Add it to its group: the Core group in `Strata.Cli.buildCommandGroups`, or the frontend's `CliFrontend`.
 
 3. The command automatically appears in `commandMap` and `--help` output.
 
@@ -56,13 +61,13 @@ For Laurel commands, use `parseLaurelVerifyOptions` which wraps `parseVerifyOpti
 
 ## How to Modify an Existing Command
 
-1. Find the command definition in `StrataMainLib.lean` (search for `def <commandName>Command`).
+1. Find the command definition in the file listed under File Layout (search for `def <commandName>Command`).
 2. Modify the `callback` implementation, `flags` list, or `args` list.
 3. If changing arity (`args`), update the callback's vector indexing accordingly.
 
 ## Conventions
 
-- Commands that read Strata files should use `pflags.buildDialectFileMap` to construct the dialect search path (handles `--include` flags and built-in dialects).
+- Commands that read Strata files should use `pflags.buildDialectFileMap dialects` to construct the dialect search path (handles `--include` flags and the preloaded dialects).
 - Use `readStrataProgram` for reading and parsing program files with error formatting.
 - Prefer the structured exit helpers over raw `IO.Process.exit`.
 - The `transform` command uses positional flag binding: `--procedures`/`--functions` bind to the most recent `--pass`. This is handled by `buildPassConfigs` which walks `pflags.entries` in order.
@@ -76,15 +81,8 @@ This package imports from:
 - `Lean` - Parser extensions, JSON utilities
 
 Key imports in `StrataMainLib.lean`:
-- `Strata.Languages.Core.Verifier` - Core verification pipeline
-- `Strata.Languages.Core.SarifOutput` - SARIF report generation
-- `Strata.Languages.C_Simp.Verify` - C_Simp verification
-- `Strata.Languages.B3.Verifier.Program` - B3 verification
-- `StrataLaurel.Implementation.LaurelCompilationPipeline` - Laurel compilation
-- `Strata.Pipeline.PyAnalyzeLaurel` - Python-to-Laurel pipeline
-- `Strata.Backends.CBMC.GOTO.CoreToGOTOPipeline` - GOTO translation
-- `Strata.Transform.ProcedureInlining` - Transform passes
-- `Strata.SimpleAPI` - High-level API functions
+- `StrataLaurel.Implementation.Cli` - the Laurel frontend (`StrataLaurel.Cli.laurelFrontend`), and through it Strata's Core commands and builders
+- `StrataPython.Cli` - the Python commands
 
 ## Testing
 

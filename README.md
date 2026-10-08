@@ -126,7 +126,7 @@ Because Laurel's `assume` is verification scaffolding with no runtime meaning, t
 ```
 Strata-CLI/
 ├── StrataMain.lean       # Entry point (dispatches to runCommandMap)
-├── StrataMainLib.lean    # All command definitions, flag parsing, utilities
+├── StrataMainLib.lean    # Registers the Python and Laurel frontends
 ├── lakefile.toml         # Lake build configuration
 ├── lean-toolchain        # Lean version pin
 └── lake-manifest.json    # Dependency lock file
