@@ -210,7 +210,7 @@ private def laurelInterpretFlags : List Flag :=
               not support --keep-all-files.",
      takesArg := .arg "core|laurel" }]
 
-private def resolveLaurelEntryByName (prog : Laurel.Program) (entry : String)
+private def resolveLaurelEntryByName (prog : Laurel.LaurelProgram) (entry : String)
     : Except String Laurel.Procedure :=
   match prog.staticProcedures.find? (·.name.text == entry) with
   | some p => .ok p
