@@ -460,14 +460,12 @@ def laurelAnalyzeToGotoCommand : Command where
           | .distinct name es _ => some (name, es) | _ => none
         let mut symtabPairs : List (String × Lean.Json) := []
         let mut gotoFns : Array Lean.Json := #[]
-        let mut allLiftedFuncs : List Core.Function := []
         for p in procs do
           let procName := Core.CoreIdent.toPretty p.header.name
           match procedureToGotoCtx Env p (sourceText := sourceText) (axioms := axioms) (distincts := distincts)
                 with
           | .error e => exitInternalError s!"{e}"
-          | .ok (ctx, liftedFuncs) =>
-            allLiftedFuncs := allLiftedFuncs ++ liftedFuncs
+          | .ok ctx =>
             let json ← IO.ofExcept (CoreToGOTO.CProverGOTO.Context.toJson procName ctx)
             match json.symtab with
             | .obj m => symtabPairs := symtabPairs ++ m.toList
@@ -478,7 +476,7 @@ def laurelAnalyzeToGotoCommand : Command where
               | some (_, .arr fns) => gotoFns := gotoFns ++ fns
               | _ => pure ()
             | _ => pure ()
-        for f in funcs ++ allLiftedFuncs do
+        for f in funcs do
           let funcName := Core.CoreIdent.toPretty f.name
           match functionToGotoCtx Env f with
           | .error e => exitInternalError s!"{e}"
