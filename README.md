@@ -92,9 +92,12 @@ accepts the full set, so flag lists cannot be shared verbatim across the two.
 `--interpreter core` (the default) translates the program to Core and runs the Core
 interpreter. `--interpreter laurel` resolves the program against the prelude and runs the Laurel
 interpreter on it directly, with no translation to Core; it rejects `--keep-all-files`.
-Like the Core path it skips `assume`s and checks preconditions and postconditions (free
-conditions are not checked). A program the verify pipeline would reject (a resolution
-error, a not-yet-supported construct, or a source name starting with `$`) is an error.
+Like the Core path it skips `assume`s and checks the preconditions and postconditions of
+calls (free conditions are not checked); neither checks `modifies` frames. With `--entry P`,
+the Core path calls `P` from an entry point it adds: `P`'s `requires` is assumed, but its
+postconditions are checked and an exception escaping it is a failed check. The Laurel path runs
+`P`'s body as the entry point. A program the verify pipeline would reject (a resolution error, a
+not-yet-supported construct, or a source name starting with `$`) is an error.
 `--fuel` bounds the steps of each entry procedure (default 100000, a different unit from
 the Core interpreter's per-call fuel), so a divergent program, including plain unbounded
 recursion, ends out of fuel. An unsupported construct, an uncaught `throw` or running out of fuel ends
