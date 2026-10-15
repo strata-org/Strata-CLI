@@ -17,7 +17,7 @@
     "type" : "git",
     "subDir" : null,
     "scope" : "",
-    "rev" : "88871b7ca1f856c885ee0c1ba7d7624efa87fab3",
+    "rev" : "b62d1f5867d53e60c0d56156e5a4e4af3d163676",
     "name" : "StrataPython",
     "manifestFile" : "lake-manifest.json",
     "inputRev" : "main",
