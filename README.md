@@ -104,6 +104,38 @@ recursion, ends out of fuel. An unsupported construct, an uncaught `throw` or ru
 that entry with exit 2; assertion failures recorded before an uncaught `throw` or
 out-of-fuel are still reported.
 
+## Laurel Phase Selection
+
+The Laurel commands (`laurelAnalyze`, `laurelAnalyzeBinary`, `laurelInterpret`,
+`laurelInterpretBinary`, `laurelToCore`, `laurelAnalyzeToGoto`) also accept:
+
+| Flag | Description |
+|------|-------------|
+| `--phases <names>` | Run these Laurel phases, in this order (comma-separated) |
+| `--skip-phases <names>` | Run the default Laurel phase order without these phases |
+| `--display-phases` | Print the available Laurel phases and the default order |
+| `--display-phase-contracts` | Print the shape lifeline table for the chosen order |
+
+These flags select Laurel phases only. `--phases` runs exactly the phases given, in that order,
+and `--skip-phases` removes each name from the default order, e.g.
+`--skip-phases CoroutineElaboration,YieldElim,InferHoleTypes,EliminateDeterministicHoles`. An
+unknown name is an error, and a phase may be named only once. `Transparency`, `Ordering` and
+`LaurelToCoreSchema` always run and cannot be named; a phase that runs before `Transparency`
+cannot follow one that runs after it.
+
+An order is checked against the phases' `NodeKind` declarations before anything runs, keeping
+apart two origins of a shape that is still present when a phase declaring it unsupported runs. A
+shape some phase in the order creates is an error in the order itself, whatever the input. A
+shape that can only have come from the input is a requirement on the input instead: after
+resolution the input is checked not to contain it, and is refused if it does, naming the phase
+that would remove it. The input check does not model the `Pseudo` kinds, so a requirement on one
+is an error in the order instead, naming the phase that would remove it.
+
+`--display-phases` lists the phases with a pasteable `--phases` line for the default order, and
+the phases that always run. Given without an input file, `--phases` / `--skip-phases` only report
+whether the order composes and which shapes the input must not contain. Given with an input
+file, `--display-phases` and `--display-phase-contracts` print and exit before the file is read.
+
 ## Exit Codes
 
 | Code | Category | Meaning |
