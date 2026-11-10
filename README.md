@@ -33,16 +33,11 @@ lake exe strata <command> --help
 
 ### Python
 
-| Command | Description |
-|---------|-------------|
-| `pyAnalyzeLaurel <file>` | Verify a Python Ion program via the Laurel pipeline |
-| `pyResolveOverloads <python_path> <dispatch_ion>` | Identify overloaded service modules a Python program uses |
-| `pySpecs <source_dir> <output_dir>` | Translate Python spec files to DDM Ion format |
-| `pySpecToLaurel <python_path> <strata_path>` | Translate a PySpec Ion file to Laurel declarations |
-| `pyAnalyzeLaurelToGoto <file>` | Translate Python Ion through Laurel to GOTO JSON |
-| `pyAnalyzeToGoto <file>` | Translate Python Ion directly to GOTO JSON |
-| `pyTranslateLaurel <file>` | Translate Python Ion through Laurel to Core, print to stdout |
-| `pyInterpret <file>` | Concretely interpret a Python Ion program |
+The Python commands (`pyAnalyzeLaurel`, `pySpecs`, `pyInterpret` and the rest) are
+not part of `strata`. StrataPythonFrontEnd's `strataPy` executable offers them,
+together with the Core commands above. Run `strataPy check` and `strataPy print` on
+Python programs: `strataPy` preloads the Python and PythonSpecs dialects, and
+`strata` does not.
 
 ### Laurel
 
@@ -161,7 +156,7 @@ Because Laurel's `assume` is verification scaffolding with no runtime meaning, t
 ```
 Strata-CLI/
 ├── StrataMain.lean       # Entry point (dispatches to runCommandMap)
-├── StrataMainLib.lean    # Registers the Python and Laurel frontends
+├── StrataMainLib.lean    # Registers the Laurel frontend
 ├── lakefile.toml         # Lake build configuration
 ├── lean-toolchain        # Lean version pin
 └── lake-manifest.json    # Dependency lock file
@@ -186,7 +181,4 @@ lake exe strata transform program.core.st \
 
 # Parse and validate without verification
 lake exe strata check program.core.st
-
-# Analyze Python via Laurel pipeline
-lake exe strata pyAnalyzeLaurel program.python.st.ion --spec-dir ./specs
 ```

@@ -4,18 +4,17 @@ Guide for AI agents working with the StrataCLI package.
 
 ## Package Purpose
 
-StrataCLI is the command-line frontend for Strata. It builds the `strata` executable that orchestrates parsing, type-checking, transformation, and analysis (including SMT-based verification) of programs written in Strata dialects (Core, Laurel, Python, C_Simp, B3).
+StrataCLI is the command-line frontend for Strata. It builds the `strata` executable that orchestrates parsing, type-checking, transformation, and analysis (including SMT-based verification) of programs written in Strata dialects (Core, Laurel, C_Simp, B3). The Python commands are in StrataPythonFrontEnd's `strataPy` executable.
 
 ## Architecture
 
 ### File Layout
 
 - `StrataMain.lean` - Minimal entry point. Calls `runCommandMap commandMap commandGroups args`. Do not add logic here.
-- `StrataMainLib.lean` - Builds the command groups from Strata's Core commands plus the Python and Laurel frontends (`CliFrontend`s). The commands themselves live in other packages:
+- `StrataMainLib.lean` - Builds the command groups from Strata's Core commands plus the Laurel frontend (`CliFrontend`). The commands themselves live in other packages:
   - Strata `Strata/Cli/CoreCommands.lean` - `verify`, `transform`, the command builders, `SolverBackend`, `PipelineResolver`.
   - Strata `Strata/Cli/DialectCommands.lean` - `check`, `toIon`, `print`, `diff`.
   - Strata `StrataLaurel/Implementation/Cli.lean` - the Laurel commands and `laurelFrontend`.
-  - StrataPythonFrontEnd `StrataPython/Cli.lean` - the Python commands.
   - Strata `Strata/Cli/Framework.lean` - flag parsing, exit codes, help output.
 
 ### Exit Codes (namespace `ExitCode`)
@@ -71,7 +70,7 @@ For Laurel commands, use `parseLaurelVerifyOptions` which wraps `parseVerifyOpti
 - Use `readStrataProgram` for reading and parsing program files with error formatting.
 - Prefer the structured exit helpers over raw `IO.Process.exit`.
 - The `transform` command uses positional flag binding: `--procedures`/`--functions` bind to the most recent `--pass`. This is handled by `buildPassConfigs` which walks `pflags.entries` in order.
-- The `pyAnalyzeLaurel` command emits machine-readable `RESULT:` and `DETAIL:` lines on stdout for downstream tooling. Other commands use human-readable output.
+- Commands use human-readable output; `strataPy pyAnalyzeLaurel` (StrataPythonFrontEnd) is the one that emits machine-readable `RESULT:` and `DETAIL:` lines.
 
 ## Dependencies
 
@@ -82,7 +81,6 @@ This package imports from:
 
 Key imports in `StrataMainLib.lean`:
 - `StrataLaurel.Implementation.Cli` - the Laurel frontend (`StrataLaurel.Cli.laurelFrontend`), and through it Strata's Core commands and builders
-- `StrataPython.Cli` - the Python commands
 
 ## Testing
 
@@ -100,11 +98,6 @@ lake exe strata verify ${STRATA_PACKAGE_ROOT}/Examples/SimpleProc.core.st
 let fm ← pflags.buildDialectFileMap
 let (pgm, inputCtx) ← readStrataProgram fm file
 let vcResults ← Strata.Core.verify pgm inputCtx proceduresToVerify opts mkDischarge
-```
-
-### Running the Python-to-Laurel pipeline
-```lean
-let (outcome, stats, pctx) ← Strata.Pipeline.runPyAnalyzePipeline { ... }
 ```
 
 ### Applying transforms
